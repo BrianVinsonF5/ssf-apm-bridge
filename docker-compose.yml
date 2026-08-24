@@ -1,0 +1,17 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  bridge:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      STORE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
