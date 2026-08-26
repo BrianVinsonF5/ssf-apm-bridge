@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ssf-apm-bridge-ingress
+  namespace: ssf-bridge
+  labels:
+    app.kubernetes.io/name: ssf-apm-bridge
+    app.kubernetes.io/component: ingress
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ssf-bridge.example.com
+      secretName: ssf-bridge-tls
+  rules:
+    - host: ssf-bridge.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ssf-apm-bridge-service
+                port:
+                  number: 80

@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ------------------------------------------------------------------------------
+# Automated Deployment Script for SSF-APM Bridge on Kubernetes
+# ------------------------------------------------------------------------------
+
+IMAGE_NAME="${IMAGE_NAME:-ssf-apm-bridge:latest}"
+NAMESPACE="${NAMESPACE:-ssf-bridge}"
+ENV_FILE="${ENV_FILE:-.env}"
+
+echo "==> Deploying SSF-APM Bridge to Kubernetes namespace '${NAMESPACE}'..."
+
+# 1. Check prerequisites
+if ! command -v kubectl &> /dev/null; then
+    echo "Error: kubectl command line tool is not installed or not in PATH." >&2
+    exit 1
+fi
+
+if ! command -v docker &> /dev/null; then
+    echo "Error: docker is not installed or not in PATH." >&2
+    exit 1
+fi
+
+# 2. Build Docker Image
+echo "==> Building Docker image '${IMAGE_NAME}'..."
+docker build -t "${IMAGE_NAME}" .
+
+# 3. Handle Minikube / Kind if detected
+if command -v minikube &> /dev/null && minikube status &> /dev/null; then
+    echo "==> Loading image into Minikube..."
+    minikube image load "${IMAGE_NAME}"
+elif command -v kind &> /dev/null && kind get clusters 2>/dev/null | grep -q .; then
+    echo "==> Loading image into Kind..."
+    kind load docker-image "${IMAGE_NAME}"
+fi
+
+# 4. Apply Namespace
+echo "==> Applying Namespace..."
+kubectl apply -f k8s/00-namespace.yaml
+
+# 5. Apply ConfigMap
+echo "==> Applying ConfigMap..."
+kubectl apply -f k8s/01-configmap.yaml
+
+# 6. Apply Secret (Read from .env if available, otherwise apply template)
+if [ -f "${ENV_FILE}" ]; then
+    echo "==> Creating Secret from ${ENV_FILE} file..."
+    ADMIN_KEY=$(grep '^ADMIN_API_KEY=' "${ENV_FILE}" | cut -d '=' -f2- || echo "change-me-to-a-long-random-value")
+    BIGIP_USER=$(grep '^BIGIP_USERNAME=' "${ENV_FILE}" | cut -d '=' -f2- || echo "ssf-bridge-svc")
+    BIGIP_PASS=$(grep '^BIGIP_PASSWORD=' "${ENV_FILE}" | cut -d '=' -f2- || echo "change-me")
+
+    kubectl create secret generic ssf-bridge-secrets \
+        --namespace="${NAMESPACE}" \
+        --from-literal=ADMIN_API_KEY="${ADMIN_KEY}" \
+        --from-literal=BIGIP_USERNAME="${BIGIP_USER}" \
+        --from-literal=BIGIP_PASSWORD="${BIGIP_PASS}" \
+        --dry-run=client -o yaml | kubectl apply -f -
+else
+    echo "==> Applying secret template k8s/02-secret.yaml..."
+    kubectl apply -f k8s/02-secret.yaml
+fi
+
+# 7. Apply Redis Caching Backend
+echo "==> Applying Redis backend..."
+kubectl apply -f k8s/03-redis.yaml
+
+# 8. Apply Deployment & Service
+echo "==> Applying SSF-APM Bridge Deployment and Service..."
+kubectl apply -f k8s/04-deployment.yaml
+kubectl apply -f k8s/05-service.yaml
+
+# 9. Apply Ingress (optional)
+if [ -f k8s/06-ingress.yaml ]; then
+    echo "==> Applying Ingress..."
+    kubectl apply -f k8s/06-ingress.yaml || echo "Warning: Ingress creation failed or ingress-controller not present, skipping."
+fi
+
+# 10. Wait for Rollout
+echo "==> Waiting for deployment rollout..."
+kubectl rollout status deployment/ssf-apm-bridge -n "${NAMESPACE}" --timeout=120s
+
+echo "==> SSF-APM Bridge successfully deployed!"
+echo "    Check status: kubectl get pods -n ${NAMESPACE}"

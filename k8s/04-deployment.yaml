@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ssf-apm-bridge
+  namespace: ssf-bridge
+  labels:
+    app.kubernetes.io/name: ssf-apm-bridge
+    app.kubernetes.io/component: bridge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ssf-apm-bridge
+  template:
+    metadata:
+      labels:
+        app: ssf-apm-bridge
+    spec:
+      containers:
+        - name: bridge
+          image: ssf-apm-bridge:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: ssf-bridge-config
+            - secretRef:
+                name: ssf-bridge-secrets
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ssf-bridge-config
+  namespace: ssf-bridge
+  labels:
+    app.kubernetes.io/name: ssf-apm-bridge
+    app.kubernetes.io/component: config
+data:
+  HOST: "0.0.0.0"
+  PORT: "8080"
+  LOG_LEVEL: "INFO"
+  STORE_BACKEND: "redis"
+  REDIS_URL: "redis://redis-service.ssf-bridge.svc.cluster.local:6379/0"
+  RECEIVER_BASE_URL: "https://ssf-bridge.example.com"
+  REPLAY_JTI_TTL_SECONDS: "900"
+  DECISION_CACHE_TTL_SECONDS: "300"
+  CORRELATION_TTL_SECONDS: "86400"
+  BIGIP_HOST: "bigip-apm.example.internal"
+  BIGIP_PORT: "443"
+  BIGIP_VERIFY_TLS: "true"
+  BIGIP_AUTH_MODE: "token"
+  BIGIP_ENABLE_FAST_PATH: "false"

@@ -75,6 +75,24 @@ Or with Docker (bridge + Redis, `STORE_BACKEND=redis`):
 docker compose up --build
 ```
 
+Or deploy to **Kubernetes** (automated build, secrets, Redis backend, service, and ingress):
+
+Linux/macOS:
+```bash
+./deploy.sh
+```
+
+Windows PowerShell:
+```powershell
+.\deploy.ps1
+```
+
+Or manually with `kubectl`:
+```bash
+kubectl apply -f k8s/
+```
+
+
 ## Wiring it to a real transmitter and a real BIG-IP
 
 1. **Register a transmitter.** Either hand it fully-formed config:
