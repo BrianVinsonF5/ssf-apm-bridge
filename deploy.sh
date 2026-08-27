@@ -61,16 +61,27 @@ else
     kubectl apply -f k8s/02-secret.yaml
 fi
 
-# 7. Apply Redis Caching Backend
+# 7. Apply Internal CA Trust ConfigMap & cert-manager resources
+echo "==> Applying Internal CA Bundle ConfigMap..."
+if [ -f k8s/08-internal-ca-configmap.yaml ]; then
+    kubectl apply -f k8s/08-internal-ca-configmap.yaml
+fi
+
+echo "==> Applying cert-manager resources..."
+if [ -f k8s/07-cert-manager.yaml ]; then
+    kubectl apply -f k8s/07-cert-manager.yaml || echo "Warning: cert-manager CRDs not present, skipping cert-manager Issuer/Certificate."
+fi
+
+# 8. Apply Redis Caching Backend
 echo "==> Applying Redis backend..."
 kubectl apply -f k8s/03-redis.yaml
 
-# 8. Apply Deployment & Service
+# 9. Apply Deployment & Service
 echo "==> Applying SSF-APM Bridge Deployment and Service..."
 kubectl apply -f k8s/04-deployment.yaml
 kubectl apply -f k8s/05-service.yaml
 
-# 9. Apply Ingress (optional)
+# 10. Apply Ingress (optional)
 if [ -f k8s/06-ingress.yaml ]; then
     echo "==> Applying Ingress..."
     kubectl apply -f k8s/06-ingress.yaml || echo "Warning: Ingress creation failed or ingress-controller not present, skipping."

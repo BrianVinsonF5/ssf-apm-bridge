@@ -73,16 +73,27 @@ if (Test-Path $EnvFile) {
     kubectl apply -f k8s/02-secret.yaml
 }
 
-# 7. Apply Redis Caching Backend
+# 7. Apply Internal CA Trust ConfigMap & cert-manager resources
+if (Test-Path "k8s/08-internal-ca-configmap.yaml") {
+    Write-Host "==> Applying Internal CA Bundle ConfigMap..." -ForegroundColor Cyan
+    kubectl apply -f k8s/08-internal-ca-configmap.yaml
+}
+
+if (Test-Path "k8s/07-cert-manager.yaml") {
+    Write-Host "==> Applying cert-manager resources..." -ForegroundColor Cyan
+    kubectl apply -f k8s/07-cert-manager.yaml -ErrorAction SilentlyContinue
+}
+
+# 8. Apply Redis Caching Backend
 Write-Host "==> Applying Redis backend..." -ForegroundColor Cyan
 kubectl apply -f k8s/03-redis.yaml
 
-# 8. Apply Deployment & Service
+# 9. Apply Deployment & Service
 Write-Host "==> Applying SSF-APM Bridge Deployment and Service..." -ForegroundColor Cyan
 kubectl apply -f k8s/04-deployment.yaml
 kubectl apply -f k8s/05-service.yaml
 
-# 9. Apply Ingress
+# 10. Apply Ingress
 if (Test-Path "k8s/06-ingress.yaml") {
     Write-Host "==> Applying Ingress..." -ForegroundColor Cyan
     kubectl apply -f k8s/06-ingress.yaml -ErrorAction SilentlyContinue

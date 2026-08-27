@@ -13,6 +13,8 @@ import httpx
 from jwt import PyJWK, PyJWKClient
 from jwt.exceptions import PyJWKClientError
 
+from app.config import settings
+
 JWKS_TTL_SECONDS = 3600
 
 
@@ -42,7 +44,12 @@ class JWKSManager:
 
         stale = time.time() - self._client_created_at.get(issuer, 0) > JWKS_TTL_SECONDS
         if issuer not in self._clients or stale:
-            self._clients[issuer] = PyJWKClient(jwks_uri, cache_keys=True, lifespan=JWKS_TTL_SECONDS)
+            self._clients[issuer] = PyJWKClient(
+                jwks_uri,
+                cache_keys=True,
+                lifespan=JWKS_TTL_SECONDS,
+                ssl_context=settings.get_ssl_context(),
+            )
             self._client_created_at[issuer] = time.time()
         return self._clients[issuer]
 
@@ -70,7 +77,7 @@ async def fetch_ssf_configuration(issuer_or_config_url: str, *, client: httpx.As
         url = url.rstrip("/") + "/.well-known/ssf-configuration"
 
     owns_client = client is None
-    client = client or httpx.AsyncClient(timeout=10.0)
+    client = client or httpx.AsyncClient(timeout=10.0, verify=settings.get_httpx_verify())
     try:
         resp = await client.get(url)
         resp.raise_for_status()

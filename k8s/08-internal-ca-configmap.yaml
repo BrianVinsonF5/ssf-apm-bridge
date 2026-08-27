@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: internal-ca-bundle
+  namespace: ssf-bridge
+  labels:
+    app.kubernetes.io/name: ssf-apm-bridge
+    app.kubernetes.io/component: ca-trust
+data:
+  ca-bundle.crt: |
+    -----BEGIN CERTIFICATE-----
+    # Paste your internal Root CA / Intermediate CA certificate PEM here.
+    # This bundle is mounted into the ssf-apm-bridge pod so the application
+    # trusts HTTPS certificates presented by BIG-IP APM and Keycloak (SSF IdP).
+    -----END CERTIFICATE-----

@@ -92,6 +92,12 @@ Or manually with `kubectl`:
 kubectl apply -f k8s/
 ```
 
+### Custom CA Trust & cert-manager
+
+- **Internal CA Trust (BIG-IP APM & Keycloak SSF)**: Paste your enterprise root/intermediate CA certificate PEM into [`k8s/08-internal-ca-configmap.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/08-internal-ca-configmap.yaml). It is mounted at `/etc/ssl/certs/ca-bundle.crt` inside the container with `SSL_CERT_FILE` and `CA_BUNDLE_PATH` set so python's `httpx` and `PyJWKClient` trust internal HTTPS endpoints.
+- **cert-manager TLS Issuance**: [`k8s/07-cert-manager.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/07-cert-manager.yaml) defines a cert-manager `ClusterIssuer` (`internal-ca-issuer`) and `Certificate` (`ssf-bridge-cert`) resource for automated ingress TLS certificate management.
+
+
 
 ## Wiring it to a real transmitter and a real BIG-IP
 

@@ -51,3 +51,13 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          volumeMounts:
+            - name: ca-bundle-volume
+              mountPath: /etc/ssl/certs/ca-bundle.crt
+              subPath: ca-bundle.crt
+              readOnly: true
+      volumes:
+        - name: ca-bundle-volume
+          configMap:
+            name: internal-ca-bundle
+

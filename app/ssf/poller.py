@@ -12,6 +12,7 @@ from typing import Awaitable, Callable
 
 import httpx
 
+from app.config import settings
 from app.ssf.registry import TransmitterConfig
 
 logger = logging.getLogger("ssf_bridge.poller")
@@ -23,7 +24,7 @@ class PollDeliveryClient:
     def __init__(self, config: TransmitterConfig, access_token: str, *, http_client: httpx.AsyncClient | None = None):
         self._config = config
         self._token = access_token
-        self._client = http_client or httpx.AsyncClient(timeout=15.0)
+        self._client = http_client or httpx.AsyncClient(timeout=15.0, verify=settings.get_httpx_verify())
         self._owns_client = http_client is None
         self._poll_endpoint = config.configuration_endpoint  # set by caller to the transmitter's poll endpoint_url
 

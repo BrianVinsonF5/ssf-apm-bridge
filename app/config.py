@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     decision_cache_ttl_seconds: int = 300
     correlation_ttl_seconds: int = 86400
 
+    # --- Custom CA Trust ---
+    ca_bundle_path: str = ""
+
     # --- BIG-IP APM ---
     bigip_host: str = ""
     bigip_port: int = 443
@@ -42,5 +45,27 @@ class Settings(BaseSettings):
     def bigip_base_url(self) -> str:
         return f"https://{self.bigip_host}:{self.bigip_port}"
 
+    def get_httpx_verify(self, verify_tls: bool = True) -> bool | str:
+        """Returns httpx verify parameter: False, ca_bundle_path string, or True."""
+        if not verify_tls:
+            return False
+        if self.ca_bundle_path:
+            return self.ca_bundle_path
+        return True
+
+    def get_ssl_context(self, verify_tls: bool = True) -> ssl.SSLContext:
+        """Returns standard or custom SSLContext for libraries requiring PySSL."""
+        import ssl
+
+        if not verify_tls:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            return ctx
+        if self.ca_bundle_path:
+            return ssl.create_default_context(cafile=self.ca_bundle_path)
+        return ssl.create_default_context()
+
 
 settings = Settings()
+

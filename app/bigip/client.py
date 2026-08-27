@@ -54,7 +54,7 @@ class BigIpApmClient:
         self._token_expires_at: float = 0.0
         self._client = httpx.Client(
             base_url=settings.bigip_base_url,
-            verify=settings.bigip_verify_tls,
+            verify=settings.get_httpx_verify(settings.bigip_verify_tls),
             timeout=15.0,
         )
 

@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from app.config import settings
 from app.models import SubjectIdentifier
 from app.security.jwks import fetch_ssf_configuration
 from app.ssf.registry import TransmitterConfig
@@ -32,7 +33,7 @@ class StreamManagementClient:
     def __init__(self, config: TransmitterConfig, access_token: str, *, http_client: httpx.AsyncClient | None = None):
         self._config = config
         self._token = access_token
-        self._client = http_client or httpx.AsyncClient(timeout=10.0)
+        self._client = http_client or httpx.AsyncClient(timeout=10.0, verify=settings.get_httpx_verify())
         self._owns_client = http_client is None
 
     async def aclose(self) -> None:

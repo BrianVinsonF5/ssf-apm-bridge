@@ -21,3 +21,6 @@ data:
   BIGIP_VERIFY_TLS: "true"
   BIGIP_AUTH_MODE: "token"
   BIGIP_ENABLE_FAST_PATH: "false"
+  CA_BUNDLE_PATH: "/etc/ssl/certs/ca-bundle.crt"
+  SSL_CERT_FILE: "/etc/ssl/certs/ca-bundle.crt"
+
