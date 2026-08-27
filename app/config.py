@@ -90,6 +90,31 @@ class Settings(BaseSettings):
         return ssl.create_default_context()
 
 
+def _sanitize_ca_env() -> None:
+    """Removes invalid, empty, or unpopulated CA bundle paths from os.environ
+    so httpx/requests trust_env does not crash on empty files."""
+    for env_var in ("SSL_CERT_FILE", "CA_BUNDLE_PATH", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        path = os.environ.get(env_var)
+        if path:
+            if not os.path.exists(path) or os.path.getsize(path) == 0:
+                os.environ.pop(env_var, None)
+            else:
+                try:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    if "-----BEGIN CERTIFICATE-----" not in content:
+                        os.environ.pop(env_var, None)
+                    else:
+                        import ssl
+
+                        ctx = ssl.create_default_context()
+                        ctx.load_verify_locations(cafile=path)
+                except Exception:
+                    os.environ.pop(env_var, None)
+
+
+_sanitize_ca_env()
 settings = Settings()
+
 
 
