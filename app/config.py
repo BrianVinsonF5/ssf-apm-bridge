@@ -5,6 +5,7 @@ the rest of the app can import `settings` without side effects.
 """
 from __future__ import annotations
 
+import os
 from typing import Literal
 
 from pydantic import Field
@@ -45,12 +46,33 @@ class Settings(BaseSettings):
     def bigip_base_url(self) -> str:
         return f"https://{self.bigip_host}:{self.bigip_port}"
 
+    @property
+    def valid_ca_bundle_path(self) -> str | None:
+        """Returns ca_bundle_path if the file exists, is non-empty, and contains valid PEM certificates."""
+        if not self.ca_bundle_path or not os.path.exists(self.ca_bundle_path):
+            return None
+        try:
+            if os.path.getsize(self.ca_bundle_path) == 0:
+                return None
+            with open(self.ca_bundle_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            if "-----BEGIN CERTIFICATE-----" not in content:
+                return None
+            import ssl
+
+            ctx = ssl.create_default_context()
+            ctx.load_verify_locations(cafile=self.ca_bundle_path)
+            return self.ca_bundle_path
+        except Exception:
+            return None
+
     def get_httpx_verify(self, verify_tls: bool = True) -> bool | str:
         """Returns httpx verify parameter: False, ca_bundle_path string, or True."""
         if not verify_tls:
             return False
-        if self.ca_bundle_path:
-            return self.ca_bundle_path
+        valid_path = self.valid_ca_bundle_path
+        if valid_path:
+            return valid_path
         return True
 
     def get_ssl_context(self, verify_tls: bool = True) -> ssl.SSLContext:
@@ -62,10 +84,12 @@ class Settings(BaseSettings):
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             return ctx
-        if self.ca_bundle_path:
-            return ssl.create_default_context(cafile=self.ca_bundle_path)
+        valid_path = self.valid_ca_bundle_path
+        if valid_path:
+            return ssl.create_default_context(cafile=valid_path)
         return ssl.create_default_context()
 
 
 settings = Settings()
+
 
