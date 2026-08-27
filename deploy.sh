@@ -5,9 +5,10 @@ set -euo pipefail
 # Automated Deployment Script for SSF-APM Bridge on Kubernetes
 # ------------------------------------------------------------------------------
 
-IMAGE_NAME="${IMAGE_NAME:-ssf-apm-bridge:latest}"
+IMAGE_NAME="${IMAGE_NAME:-ghcr.io/brianvinsonf5/ssf-apm-bridge:latest}"
 NAMESPACE="${NAMESPACE:-ssf-bridge}"
 ENV_FILE="${ENV_FILE:-.env}"
+PUSH_IMAGE="${PUSH_IMAGE:-false}"
 
 echo "==> Deploying SSF-APM Bridge to Kubernetes namespace '${NAMESPACE}'..."
 
@@ -26,7 +27,13 @@ fi
 echo "==> Building Docker image '${IMAGE_NAME}'..."
 docker build -t "${IMAGE_NAME}" .
 
-# 3. Handle Minikube / Kind if detected
+# 3. Optional: Push Docker Image to Container Registry
+if [ "${PUSH_IMAGE}" = "true" ]; then
+    echo "==> Pushing Docker image '${IMAGE_NAME}' to registry..."
+    docker push "${IMAGE_NAME}"
+fi
+
+# 4. Handle Minikube / Kind if detected
 if command -v minikube &> /dev/null && minikube status &> /dev/null; then
     echo "==> Loading image into Minikube..."
     minikube image load "${IMAGE_NAME}"

@@ -97,6 +97,20 @@ kubectl apply -f k8s/
 - **Internal CA Trust (BIG-IP APM & Keycloak SSF)**: Paste your enterprise root/intermediate CA certificate PEM into [`k8s/08-internal-ca-configmap.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/08-internal-ca-configmap.yaml). It is mounted at `/etc/ssl/certs/ca-bundle.crt` inside the container with `SSL_CERT_FILE` and `CA_BUNDLE_PATH` set so python's `httpx` and `PyJWKClient` trust internal HTTPS endpoints.
 - **cert-manager TLS Issuance**: [`k8s/07-cert-manager.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/07-cert-manager.yaml) defines a cert-manager `ClusterIssuer` (`internal-ca-issuer`) and `Certificate` (`ssf-bridge-cert`) resource for automated ingress TLS certificate management.
 
+### GitHub Container Registry (GHCR) & CI/CD
+
+- **GitHub Actions**: Automated workflow [`.github/workflows/docker-publish.yml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/.github/workflows/docker-publish.yml) builds and pushes the image to `ghcr.io/brianvinsonf5/ssf-apm-bridge:latest` on every push to `main`.
+- **Manual Push via Script**:
+  ```bash
+  PUSH_IMAGE=true ./deploy.sh
+  ```
+  or in PowerShell:
+  ```powershell
+  .\deploy.ps1 -PushImage
+  ```
+- **Private Package Pull Secret**: [`k8s/09-ghcr-secret.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/09-ghcr-secret.yaml) provides a template secret if package visibility is set to private.
+
+
 
 
 ## Wiring it to a real transmitter and a real BIG-IP

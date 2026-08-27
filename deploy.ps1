@@ -1,9 +1,10 @@
 # Automated Deployment Script for SSF-APM Bridge on Kubernetes (PowerShell)
 [CmdletBinding()]
 param (
-    [string]$ImageName = "ssf-apm-bridge:latest",
+    [string]$ImageName = "ghcr.io/brianvinsonf5/ssf-apm-bridge:latest",
     [string]$Namespace = "ssf-bridge",
-    [string]$EnvFile = ".env"
+    [string]$EnvFile = ".env",
+    [switch]$PushImage
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +26,13 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 Write-Host "==> Building Docker image '$ImageName'..." -ForegroundColor Cyan
 docker build -t $ImageName .
 if ($LASTEXITCODE -ne 0) { Write-Error "Docker build failed."; exit 1 }
+
+# 3. Optional: Push Docker Image to Container Registry
+if ($PushImage) {
+    Write-Host "==> Pushing Docker image '$ImageName' to registry..." -ForegroundColor Cyan
+    docker push $ImageName
+    if ($LASTEXITCODE -ne 0) { Write-Error "Docker push failed."; exit 1 }
+}
 
 # 3. Handle Minikube / Kind if detected
 if (Get-Command minikube -ErrorAction SilentlyContinue) {

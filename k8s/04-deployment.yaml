@@ -18,8 +18,8 @@ spec:
     spec:
       containers:
         - name: bridge
-          image: ssf-apm-bridge:latest
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/brianvinsonf5/ssf-apm-bridge:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http
