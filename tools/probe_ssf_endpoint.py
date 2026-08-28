@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Isolate *why* a transmitter's SSF stream endpoint returns 401.
+
+`stream creation failed: ... 401` has two very different causes and the bridge
+cannot tell them apart from the outside:
+
+  A. the token is dead/unknown  -> Keycloak rejects it everywhere
+  B. the token is fine, but the SSF endpoint won't authorize it (missing role,
+     wrong audience, or the SSF extension isn't really serving that path)
+
+This probes the same token against a known-good Keycloak endpoint (`userinfo`)
+first. That single result splits A from B. It then replays the exact POST the
+bridge makes and dumps every response header, which is where an empty-bodied
+401 hides its reason.
+
+Usage:
+    python tools/probe_ssf_endpoint.py \
+        --issuer https://keycloak.f5demos.com:30182/realms/geointdemo \
+        --access-token "$TOKEN" --insecure
+
+    # add --client-id/--client-secret to also run RFC 7662 introspection
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from urllib.parse import urlsplit
+
+import httpx
+import jwt
+
+PUSH_DELIVERY_METHOD = "https://schemas.openid.net/secevent/risc/delivery-method/push"
+SESSION_REVOKED = "https://schemas.openid.net/secevent/caep/event-type/session-revoked"
+
+
+def show(resp: httpx.Response) -> None:
+    print(f"  -> HTTP {resp.status_code}")
+    for name in ("www-authenticate", "content-type", "location", "server", "allow"):
+        if name in resp.headers:
+            print(f"     {name}: {resp.headers[name]}")
+    body = resp.text.strip()
+    print(f"     body: {body[:300] if body else '<empty>'}")
+
+
+def step1_token_liveness(client: httpx.Client, issuer: str, token: str, auth: dict) -> None:
+    print("=" * 70)
+    print("STEP 1: is this token a JWT, and is it live?")
+    print("=" * 70)
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+        print(
+            f"  JWT. iss={claims.get('iss')} aud={claims.get('aud')!r} "
+            f"scope={claims.get('scope')!r}"
+        )
+    except Exception:
+        print("  opaque (not a JWT) -- the SSF endpoint must use introspection")
+
+    print("\n  probing userinfo with the same token ...")
+    ui = client.get(f"{issuer}/protocol/openid-connect/userinfo", headers=auth)
+    show(ui)
+    if ui.status_code == 401:
+        print("\n  >> VERDICT: the token itself is rejected by Keycloak.")
+        print("     Mint a fresh one (tools/get_keycloak_token.py). Not an SSF issue.")
+    elif ui.status_code == 403:
+        print("\n  >> authentic but lacks userinfo scope -- inconclusive, continuing")
+    elif ui.status_code == 200:
+        print("\n  >> VERDICT: the token is VALID and ACTIVE.")
+        print("     A 401 from the SSF endpoint is therefore NOT about token validity;")
+        print("     it is authorization (role/audience) or the endpoint isn't SSF.")
+
+
+def step2_introspect(client: httpx.Client, issuer: str, token: str, cid: str, secret: str) -> None:
+    print("\n" + "=" * 70)
+    print("STEP 2: RFC 7662 introspection (authoritative)")
+    print("=" * 70)
+    intro = client.post(
+        f"{issuer}/protocol/openid-connect/token/introspect",
+        data={"token": token, "client_id": cid, "client_secret": secret},
+    )
+    if intro.status_code != 200:
+        show(intro)
+        return
+    data = intro.json()
+    print(f"  active={data.get('active')}")
+    for k in ("aud", "scope", "azp", "exp", "realm_access", "resource_access"):
+        if k in data:
+            print(f"  {k}: {json.dumps(data[k])}")
+    if data.get("active") is False:
+        print("  >> token is INACTIVE (expired or revoked)")
+
+
+def step3_metadata(client: httpx.Client, issuer: str, auth: dict) -> dict:
+    print("\n" + "=" * 70)
+    print("STEP 3: what does the SSF metadata advertise?")
+    print("=" * 70)
+    parts = urlsplit(issuer)
+    meta_url = f"{parts.scheme}://{parts.netloc}/.well-known/ssf-configuration{parts.path}"
+    print(f"  GET {meta_url}")
+    resp = client.get(meta_url, headers=auth)
+    if resp.status_code != 200:
+        show(resp)
+        sys.exit(1)
+    meta = resp.json()
+    for k, v in meta.items():
+        print(f"     {k}: {v if isinstance(v, str) else json.dumps(v)}")
+    return meta
+
+
+def step4_replay(client: httpx.Client, config_endpoint: str, receiver: str, auth: dict) -> None:
+    print("\n" + "=" * 70)
+    print("STEP 4: replay the bridge's exact POST")
+    print("=" * 70)
+    payload = {
+        "delivery": {"method": PUSH_DELIVERY_METHOD, "endpoint_url": receiver},
+        "events_requested": [SESSION_REVOKED],
+        "description": "ssf-apm-bridge probe",
+    }
+    json_auth = {**auth, "Content-Type": "application/json"}
+
+    print(f"  POST {config_endpoint}")
+    show(client.post(config_endpoint, json=payload, headers=json_auth))
+
+    print("\n  same URL, GET (does it exist at all?)")
+    g = client.get(config_endpoint, headers=auth)
+    show(g)
+    if g.status_code == 404:
+        print("     >> 404 on GET: the SSF extension may not be serving this path.")
+
+    print("\n  same URL, POST with NO token (compare the challenge)")
+    show(client.post(config_endpoint, json=payload,
+                     headers={"Content-Type": "application/json"}))
+    print("     If the no-token 401 looks identical to the with-token 401, your")
+    print("     Authorization header is being ignored or stripped in transit.")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument("--issuer", required=True)
+    p.add_argument("--access-token", required=True)
+    p.add_argument("--client-id")
+    p.add_argument("--client-secret")
+    p.add_argument("--receiver", default="https://ssf-bridge.example.com/events")
+    p.add_argument("--insecure", action="store_true")
+    args = p.parse_args()
+
+    issuer = args.issuer.rstrip("/")
+    auth = {"Authorization": f"Bearer {args.access_token}"}
+    client = httpx.Client(timeout=15.0, verify=not args.insecure, follow_redirects=True)
+    try:
+        step1_token_liveness(client, issuer, args.access_token, auth)
+        if args.client_id and args.client_secret:
+            step2_introspect(client, issuer, args.access_token,
+                             args.client_id, args.client_secret)
+        meta = step3_metadata(client, issuer, auth)
+        config_endpoint = meta.get("configuration_endpoint")
+        if not config_endpoint:
+            print("\n  !! no configuration_endpoint advertised -- cannot create a stream")
+            sys.exit(1)
+        step4_replay(client, config_endpoint, args.receiver, auth)
+    finally:
+        client.close()
+
+
+if __name__ == "__main__":
+    main()

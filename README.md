@@ -229,6 +229,26 @@ stream_creation_failed: issuer=... configuration_endpoint=... error=POST ... -> 
 WWW-Authenticate: Bearer error="invalid_token", error_description="Token is not active" | body: <empty>
 ```
 
+**If the 401 has _no_ `WWW-Authenticate` header at all** (`body: <empty>` and
+nothing else), that is itself a strong signal. A Keycloak endpoint that
+authenticated and then rejected a bearer token emits an RFC 6750 challenge;
+a bare 401 usually means the request never reached bearer-token evaluation —
+the path isn't served by the SSF extension, or a proxy answered instead.
+Run the probe, which separates the two causes by testing the *same* token
+against a known-good endpoint first:
+
+```
+python tools/probe_ssf_endpoint.py \
+  --issuer https://keycloak.f5demos.com:30182/realms/geointdemo \
+  --access-token "<token>" --client-id ssf-bridge --client-secret <secret> --insecure
+```
+
+If `userinfo` returns 200 with the same token, the token is fine and the
+problem is authorization or routing at the SSF endpoint — not credentials.
+The probe also repeats the call **without** a token: if that 401 is identical
+to the authenticated one, your `Authorization` header is being ignored or
+stripped in transit.
+
 The `access_token` you pass is **not** the bridge's `ADMIN_API_KEY` — it is a
 token the *transmitter* issued for its own SSF Stream Management API. Common
 causes, in order:
