@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 
-os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
+# Must satisfy Settings' validator: not the placeholder, >=32 ASCII chars.
+os.environ.setdefault("ADMIN_API_KEY", "test-admin-key-0123456789abcdefghij")
 os.environ.setdefault("RECEIVER_BASE_URL", "https://bridge.test")
 os.environ.setdefault("BIGIP_HOST", "bigip.test")
 os.environ.setdefault("BIGIP_USERNAME", "svc")

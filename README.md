@@ -42,7 +42,9 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 cp .env.example .env
-# at minimum, set a real ADMIN_API_KEY
+# Required: set a real ADMIN_API_KEY. The service refuses to start while it
+# is the placeholder, under 32 chars, or non-ASCII.
+python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 uvicorn app.main:app --reload --port 8080
 ```
@@ -90,6 +92,53 @@ Windows PowerShell:
 Or manually with `kubectl`:
 ```bash
 kubectl apply -f k8s/
+```
+
+### External access (NodePort)
+
+Until an Ingress controller is in place, [`k8s/05-service.yaml`](k8s/05-service.yaml) is a
+`NodePort` service so that a REST client and the BIG-IP can both reach the bridge from
+outside the cluster:
+
+| Setting | Value |
+| --- | --- |
+| Service type | `NodePort` |
+| Cluster-internal | `ssf-apm-bridge-service.ssf-bridge.svc.cluster.local:80` |
+| External | `http://<node-ip>:30808` |
+| Container port | `8080` |
+
+Find a node IP and confirm the port is allocated:
+
+```bash
+kubectl get svc ssf-apm-bridge-service -n ssf-bridge
+kubectl get nodes -o wide
+```
+
+Then point your REST client at it (all admin/correlation/decision routes require the
+`X-API-Key` header; `/health` and `/readyz` do not):
+
+```bash
+curl http://<node-ip>:30808/health
+curl -H "X-API-Key: $ADMIN_API_KEY" http://<node-ip>:30808/admin/transmitters
+```
+
+Configure the BIG-IP per-request policy connector to call
+`http://<node-ip>:30808/internal/decision?subject_key=<key>` (see
+[`docs/apm-integration.md`](docs/apm-integration.md)).
+
+> **NodePort is plaintext HTTP.** The API key is sent in a header, so restrict
+> access to the node port to the BIG-IP self-IP and your admin workstation, and
+> move to the Ingress + cert-manager TLS path in
+> [`k8s/06-ingress.yaml`](k8s/06-ingress.yaml) before this leaves a lab.
+
+**Cloud clusters (EKS/AKS/GKE):** a NodePort only works if the node's security group
+or firewall permits inbound TCP `30808` from the caller, and if the nodes are reachable
+from the BIG-IP at all — nodes in private subnets are not reachable from outside the
+VPC. On EKS, add an inbound rule for `30808` to the node group security group from the
+BIG-IP's address, or use `kubectl port-forward` for local REST-client testing:
+
+```bash
+kubectl port-forward -n ssf-bridge svc/ssf-apm-bridge-service 8080:80
 ```
 
 ### Custom CA Trust & cert-manager
@@ -149,10 +198,24 @@ kubectl apply -f k8s/
 | `identifier-changed` / `identifier-recycled` | RISC | informational | Correlation remap -- not yet automated in this MVP, see below. |
 | `recovery-activated` | RISC | continuous | Flag for step-up while account recovery is in progress. |
 | `sessions-revoked` | RISC | fast | Terminate all sessions (deprecated in RISC in favor of CAEP `session-revoked`, still handled). |
+| `verification` | SSF | informational | Stream health-check echo; acknowledged and logged, no enforcement. |
 
 `app/enforcement/router.py` is the source of truth (`EVENT_PATHS`) --
 these are judgment calls, not spec requirements, and are meant to be
 edited for your risk tolerance.
+
+A single SET may carry several events (RFC 8417 §2). Every event in the
+token is dispatched independently, and the reported path is the most
+severe one taken (fast > continuous > informational).
+
+### SET freshness and replay
+
+SETs deliberately carry no `exp`, so `iat` age is the only bound on how
+long a captured token remains useful: anything older than
+`SET_MAX_AGE_SECONDS` (default 900) is rejected, and future-dated tokens
+are allowed only within `SET_CLOCK_SKEW_SECONDS` (default 120). Keep
+`REPLAY_JTI_TTL_SECONDS >= SET_MAX_AGE_SECONDS` so a SET cannot become
+replayable again once its `jti` ages out of the replay guard.
 
 ## API reference
 

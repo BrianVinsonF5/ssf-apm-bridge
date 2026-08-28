@@ -23,19 +23,32 @@ router = APIRouter(tags=["ssf"])
 
 
 def _process(raw_token: str) -> None:
-    try:
-        set_ = verify_set(raw_token, transmitter_registry)
-    except SetVerificationError:
-        logger.exception("set_verification_failed")
-        return
+    """Verify and dispatch one SET.
 
+    Runs in a background task *after* the transmitter has already been sent
+    its 202, so an exception escaping this function is invisible to the
+    transmitter and the event is gone for good. Everything is therefore
+    caught and logged here rather than allowed to propagate.
+    """
     try:
-        replay_guard.check_and_mark(set_.jti)
-    except ReplayDetected:
-        logger.warning("replay_detected: jti=%s iss=%s", set_.jti, set_.iss)
-        return
+        try:
+            set_ = verify_set(raw_token, transmitter_registry)
+        except SetVerificationError:
+            logger.exception("set_verification_failed")
+            return
 
-    handle_verified_set(set_)
+        try:
+            replay_guard.check_and_mark(set_.jti)
+        except ReplayDetected:
+            logger.warning("replay_detected: jti=%s iss=%s", set_.jti, set_.iss)
+            return
+
+        handle_verified_set(set_)
+    except Exception:  # noqa: BLE001 - last line of defense for a background task
+        # A store outage, a malformed payload that slipped past validation,
+        # a BIG-IP client bug -- none of it should take down the worker
+        # silently. Log loudly; the transmitter will not retry.
+        logger.exception("set_processing_failed_unexpectedly")
 
 
 @router.post("/events", status_code=status.HTTP_202_ACCEPTED)

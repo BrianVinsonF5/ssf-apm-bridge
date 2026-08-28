@@ -100,3 +100,18 @@ kubectl rollout status deployment/ssf-apm-bridge -n "${NAMESPACE}" --timeout=120
 
 echo "==> SSF-APM Bridge successfully deployed!"
 echo "    Check status: kubectl get pods -n ${NAMESPACE}"
+
+# 11. Report the external NodePort address so the REST client / BIG-IP can be
+# pointed at the bridge without hunting through kubectl output.
+NODE_PORT="$(kubectl get svc ssf-apm-bridge-service -n "${NAMESPACE}" \
+    -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
+if [ -n "${NODE_PORT}" ]; then
+    NODE_IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || true)"
+    if [ -z "${NODE_IP}" ]; then
+        NODE_IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)"
+        [ -n "${NODE_IP}" ] && echo "    Note: no node ExternalIP found; showing InternalIP (may not be reachable from the BIG-IP)."
+    fi
+    echo "    NodePort URL: http://${NODE_IP:-<node-ip>}:${NODE_PORT}"
+    echo "    Health check: curl http://${NODE_IP:-<node-ip>}:${NODE_PORT}/health"
+    echo "    Ensure the node firewall/security group allows inbound TCP ${NODE_PORT}."
+fi

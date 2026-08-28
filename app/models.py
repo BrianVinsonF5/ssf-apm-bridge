@@ -12,6 +12,8 @@ severity -- both are mapped on the fast path below.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from enum import Enum
 from typing import Any, Literal
@@ -46,13 +48,45 @@ class RiscEventType(str, Enum):
     SESSIONS_REVOKED = "https://schemas.openid.net/secevent/risc/event-type/sessions-revoked"
 
 
-KNOWN_EVENT_TYPES: set[str] = {e.value for e in CaepEventType} | {e.value for e in RiscEventType}
+class SsfEventType(str, Enum):
+    """Stream-management events defined by SSF itself rather than CAEP/RISC.
+
+    `verification` is the response to a verification request (see
+    stream_client.request_verification): the transmitter echoes an optional
+    `state` back over the normal delivery channel to prove the stream works
+    end to end. It carries no subject state, so it never enforces anything --
+    but it must be *recognized*, or every stream health check is logged as an
+    unrecognized event type.
+    """
+
+    VERIFICATION = "https://schemas.openid.net/secevent/ssf/event-type/verification"
+
+
+KNOWN_EVENT_TYPES: set[str] = (
+    {e.value for e in CaepEventType} | {e.value for e in RiscEventType} | {e.value for e in SsfEventType}
+)
 
 
 class EnforcementPath(str, Enum):
     FAST = "fast"          # terminate the session now
     CONTINUOUS = "continuous"  # update the decision cache, let per-request policy react
     INFORMATIONAL = "informational"  # log / correlate only, no enforcement action
+
+
+def _stable_member_encoding(data: dict[str, Any]) -> str:
+    """Deterministically encode every non-`format` member of a subject.
+
+    Nested members (a "complex" subject's device/session/tenant sub-identifiers)
+    are recursed into rather than dropped, so two subjects differing only in a
+    nested value produce different keys. Output is hashed because it lands in a
+    Redis key and a URL query string: hashing keeps keys bounded in length and
+    free of delimiters that would otherwise need escaping.
+    """
+    members = {k: v for k, v in data.items() if k != "format"}
+    if not members:
+        return "empty"
+    canonical = json.dumps(members, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
 
 
 class SubjectIdentifier(BaseModel):
@@ -72,8 +106,11 @@ class SubjectIdentifier(BaseModel):
 
         Complex subjects (e.g. {"format": "complex", "user": {...}, "device":
         {...}}) key off the "user" sub-identifier when present, since that's
-        what an APM session is ultimately tied to; device/tenant qualifiers
-        are appended so a lookup can still disambiguate if needed.
+        what an APM session is ultimately tied to. When there is no "user"
+        member we fall back to a deterministic encoding of every member --
+        never a bare "complex:", which would collide across every distinct
+        device/tenant/session subject and let a signal about one subject
+        drive enforcement against another.
         """
         data = self.model_dump()
         fmt = data.get("format")
@@ -91,9 +128,9 @@ class SubjectIdentifier(BaseModel):
             if isinstance(user, dict):
                 nested = SubjectIdentifier.model_validate(user)
                 return nested.correlation_key()
-        # Fall back to a deterministic (if verbose) key so nothing is silently dropped.
-        items = sorted((k, v) for k, v in data.items() if k != "format" and isinstance(v, (str, int, float)))
-        return f"{fmt}:" + "|".join(f"{k}={v}" for k, v in items)
+        # Fall back to a deterministic (if verbose) key so nothing is silently
+        # dropped -- and so two different subjects never share a key.
+        return f"{fmt}:{_stable_member_encoding(data)}"
 
 
 class SecurityEventToken(BaseModel):

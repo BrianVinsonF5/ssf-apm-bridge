@@ -16,11 +16,19 @@ data:
   REPLAY_JTI_TTL_SECONDS: "900"
   DECISION_CACHE_TTL_SECONDS: "300"
   CORRELATION_TTL_SECONDS: "86400"
+  SET_MAX_AGE_SECONDS: "900"
+  SET_CLOCK_SKEW_SECONDS: "120"
   BIGIP_HOST: "bigip-apm.example.internal"
   BIGIP_PORT: "443"
   BIGIP_VERIFY_TLS: "true"
   BIGIP_AUTH_MODE: "token"
   BIGIP_ENABLE_FAST_PATH: "false"
-  CA_BUNDLE_PATH: ""
-  SSL_CERT_FILE: ""
+  # Path the internal-ca-bundle ConfigMap is mounted at (see 04-deployment.yaml).
+  # These MUST be set for the mounted bundle to actually be trusted -- with them
+  # empty the volume is mounted and then ignored, and internal HTTPS (BIG-IP,
+  # Keycloak SSF) falls back to the system trust store and fails.
+  # app/config.py validates the file and ignores it if it is empty or not PEM,
+  # so leaving 08-internal-ca-configmap.yaml unpopulated is safe.
+  CA_BUNDLE_PATH: "/etc/ssl/certs/ca-bundle.crt"
+  SSL_CERT_FILE: "/etc/ssl/certs/ca-bundle.crt"
 

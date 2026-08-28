@@ -76,10 +76,14 @@ def start_jwks_server(private_key, port: int) -> str:
         def log_message(self, fmt, *args):  # silence
             pass
 
-    server = HTTPServer(("localhost", port), Handler)
+    # Bind and advertise 127.0.0.1 rather than "localhost": on Windows
+    # "localhost" resolves to ::1 first, so the bridge's urllib-based JWKS
+    # fetch would hit a closed IPv6 port and every SET would fail
+    # verification with a connection error.
+    server = HTTPServer(("127.0.0.1", port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    return f"http://localhost:{port}"
+    return f"http://127.0.0.1:{port}"
 
 
 def sign_set(private_key, *, issuer: str, audience: str, event_type: str, payload: dict, subject: dict = DEMO_SUBJECT) -> str:
@@ -164,11 +168,18 @@ def main() -> None:
         time.sleep(0.3)  # let the background task finish before we check state
 
     print("\n== decision cache for demo.user@example.com after all events ==")
-    resp = http.get(
-        f"{args.bridge_url}/internal/decision",
-        headers=headers,
-        params={"subject_key": "email:demo.user@example.com"},
-    )
+    # The bridge acks with 202 *before* processing, and the very first
+    # verification pays for the JWKS fetch, so poll instead of assuming the
+    # background tasks have already landed.
+    for _ in range(20):
+        resp = http.get(
+            f"{args.bridge_url}/internal/decision",
+            headers=headers,
+            params={"subject_key": "email:demo.user@example.com"},
+        )
+        if resp.status_code == 200:
+            break
+        time.sleep(0.5)
     print(f"  HTTP {resp.status_code}: {resp.json() if resp.status_code == 200 else resp.text}")
 
     print(

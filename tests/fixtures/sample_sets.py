@@ -40,17 +40,30 @@ def make_set(
     kid: str,
     issuer: str,
     audience: str,
-    event_type: str,
-    event_payload: dict[str, Any],
+    event_type: str | None = None,
+    event_payload: dict[str, Any] | None = None,
+    events: dict[str, dict[str, Any]] | None = None,
     subject: dict[str, Any] | None = None,
     jti: str | None = None,
+    iat: int | None = None,
 ) -> str:
+    """Mint a signed SET.
+
+    Pass either `event_type`/`event_payload` for the common single-event case,
+    or `events` to build a multi-event SET (RFC 8417 allows several events in
+    one token). `iat` can be overridden to exercise freshness checks.
+    """
+    if events is None:
+        if event_type is None:
+            raise ValueError("pass either event_type or events")
+        events = {event_type: event_payload or {}}
+
     claims = {
         "iss": issuer,
-        "iat": int(time.time()),
+        "iat": int(time.time()) if iat is None else iat,
         "jti": jti or str(uuid.uuid4()),
         "aud": audience,
         "sub_id": subject or {"format": "email", "email": "alice@example.com"},
-        "events": {event_type: event_payload},
+        "events": events,
     }
     return jwt.encode(claims, private_key, algorithm="RS256", headers={"typ": "secevent+jwt", "kid": kid})

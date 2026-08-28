@@ -113,3 +113,21 @@ kubectl rollout status deployment/ssf-apm-bridge -n $Namespace --timeout=120s
 
 Write-Host "==> SSF-APM Bridge successfully deployed!" -ForegroundColor Green
 Write-Host "    Check status: kubectl get pods -n $Namespace" -ForegroundColor Yellow
+
+# 11. Report the external NodePort address so the REST client / BIG-IP can be
+# pointed at the bridge without hunting through kubectl output.
+$nodePort = kubectl get svc ssf-apm-bridge-service -n $Namespace `
+    -o jsonpath='{.spec.ports[0].nodePort}' 2>$null
+if ($nodePort) {
+    $nodeIp = kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>$null
+    if (-not $nodeIp) {
+        $nodeIp = kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>$null
+        if ($nodeIp) {
+            Write-Host "    Note: no node ExternalIP found; showing InternalIP (may not be reachable from the BIG-IP)." -ForegroundColor DarkYellow
+        }
+    }
+    if (-not $nodeIp) { $nodeIp = "<node-ip>" }
+    Write-Host "    NodePort URL: http://${nodeIp}:${nodePort}" -ForegroundColor Yellow
+    Write-Host "    Health check: curl http://${nodeIp}:${nodePort}/health" -ForegroundColor Yellow
+    Write-Host "    Ensure the node firewall/security group allows inbound TCP $nodePort." -ForegroundColor DarkYellow
+}

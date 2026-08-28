@@ -6,10 +6,17 @@ the rest of the app can import `settings` without side effects.
 from __future__ import annotations
 
 import os
+import ssl
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The value shipped in .env.example / k8s/02-secret.yaml. Rejected at
+# startup so a deployment can never accidentally run with it: this key is
+# the only thing guarding the endpoints that can terminate user sessions.
+PLACEHOLDER_ADMIN_API_KEY = "change-me-to-a-long-random-value"
+MIN_ADMIN_API_KEY_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -22,13 +29,44 @@ class Settings(BaseSettings):
     store_backend: Literal["memory", "redis"] = "memory"
     redis_url: str = "redis://localhost:6379/0"
 
-    admin_api_key: str = Field(default="change-me-to-a-long-random-value")
+    admin_api_key: str = Field(default=PLACEHOLDER_ADMIN_API_KEY)
 
     receiver_base_url: str = "http://localhost:8080"
 
     replay_jti_ttl_seconds: int = 900
     decision_cache_ttl_seconds: int = 300
     correlation_ttl_seconds: int = 86400
+
+    # --- SET freshness ---
+    # SETs deliberately carry no `exp` (SSF spec), so `iat` age is the only
+    # bound on how long a captured token stays useful. Keep
+    # REPLAY_JTI_TTL_SECONDS >= SET_MAX_AGE_SECONDS, otherwise a SET becomes
+    # replayable again once its jti is forgotten but before it goes stale.
+    set_max_age_seconds: int = 900
+    set_clock_skew_seconds: int = 120
+
+    @field_validator("admin_api_key")
+    @classmethod
+    def _reject_placeholder_admin_key(cls, v: str) -> str:
+        if v == PLACEHOLDER_ADMIN_API_KEY:
+            raise ValueError(
+                "ADMIN_API_KEY is still the placeholder value. Set a real one, e.g.\n"
+                "  python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+            )
+        if len(v) < MIN_ADMIN_API_KEY_LENGTH:
+            raise ValueError(
+                f"ADMIN_API_KEY must be at least {MIN_ADMIN_API_KEY_LENGTH} characters "
+                f"(got {len(v)}). Generate one with:\n"
+                "  python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+            )
+        try:
+            v.encode("ascii")
+        except UnicodeEncodeError as exc:
+            # Header values must be latin-1-encodable to survive the HTTP
+            # round trip, and constant-time comparison is only meaningful on
+            # bytes we can reproduce exactly on both sides.
+            raise ValueError("ADMIN_API_KEY must contain only ASCII characters") from exc
+        return v
 
     # --- Custom CA Trust ---
     ca_bundle_path: str = ""
@@ -58,8 +96,6 @@ class Settings(BaseSettings):
                 content = f.read()
             if "-----BEGIN CERTIFICATE-----" not in content:
                 return None
-            import ssl
-
             ctx = ssl.create_default_context()
             ctx.load_verify_locations(cafile=self.ca_bundle_path)
             return self.ca_bundle_path
@@ -77,8 +113,6 @@ class Settings(BaseSettings):
 
     def get_ssl_context(self, verify_tls: bool = True) -> ssl.SSLContext:
         """Returns standard or custom SSLContext for libraries requiring PySSL."""
-        import ssl
-
         if not verify_tls:
             ctx = ssl.create_default_context()
             ctx.check_hostname = False
@@ -105,8 +139,6 @@ def _sanitize_ca_env() -> None:
                     if "-----BEGIN CERTIFICATE-----" not in content:
                         os.environ.pop(env_var, None)
                     else:
-                        import ssl
-
                         ctx = ssl.create_default_context()
                         ctx.load_verify_locations(cafile=path)
                 except Exception:

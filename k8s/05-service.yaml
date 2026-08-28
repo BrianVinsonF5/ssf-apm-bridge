@@ -7,11 +7,25 @@ metadata:
     app.kubernetes.io/name: ssf-apm-bridge
     app.kubernetes.io/component: bridge
 spec:
-  type: ClusterIP
+  # NodePort (not ClusterIP) because no Ingress controller is configured yet:
+  # an external REST client needs to reach /admin + /correlation to configure
+  # the bridge, and the BIG-IP needs to reach /internal/decision from outside
+  # the cluster. Switch back to ClusterIP once 06-ingress.yaml is in service.
+  #
+  # This exposes the API over plaintext HTTP on every node. The X-API-Key
+  # travels in a header, so restrict inbound access to nodePort 30808 to the
+  # BIG-IP self-IP and admin hosts. On managed clusters (EKS/AKS/GKE) the node
+  # security group must allow TCP 30808, and nodes in private subnets are not
+  # reachable from outside the VPC at all.
+  type: NodePort
   selector:
     app: ssf-apm-bridge
   ports:
     - name: http
       port: 80
       targetPort: 8080
+      # Must be inside the cluster's service-node-port-range (default
+      # 30000-32767); pinned so BIG-IP config doesn't change on redeploy.
+      nodePort: 30808
       protocol: TCP
+

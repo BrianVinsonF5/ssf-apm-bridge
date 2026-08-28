@@ -60,4 +60,8 @@ spec:
         - name: ca-bundle-volume
           configMap:
             name: internal-ca-bundle
+            # optional so the Deployment still rolls out in clusters that
+            # haven't applied 08-internal-ca-configmap.yaml; app/config.py
+            # ignores a missing/empty/non-PEM bundle rather than failing.
+            optional: true
 
