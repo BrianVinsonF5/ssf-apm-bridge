@@ -204,7 +204,7 @@ Reading the error:
 | `RemoteProtocolError: Server disconnected without sending a response.` | TCP connected, peer closed before sending any HTTP bytes | Almost always a scheme/port mismatch — `http://` against a TLS port, or `https://` against a plaintext one. Also seen when the endpoint requires mTLS, or a firewall/mesh sidecar RSTs the connection. |
 | `ConnectError` / `All connection attempts failed` | Nothing listening, or egress blocked | Check the host/port and any egress NetworkPolicy or security group. |
 | `ConnectTimeout` | Packets silently dropped | Firewall dropping rather than rejecting; check routing from the node's subnet. |
-| `SSLCertVerificationError` | Internal CA not trusted | Populate [`k8s/08-internal-ca-configmap.yaml`](k8s/08-internal-ca-configmap.yaml) and restart the pods. |
+| `SSLCertVerificationError` | Internal CA not trusted, or self-signed cert | Populate [`k8s/08-internal-ca-configmap.yaml`](k8s/08-internal-ca-configmap.yaml) and restart the pods. For a lab transmitter, send `"verify_tls": false` (see below). |
 | `HTTP 401` / `403` | Metadata endpoint is protected | Supply a valid `access_token`. |
 | `HTTP 404` on both candidates | Neither well-known convention matches | Pass the exact metadata URL as `issuer_or_config_url`. |
 | `body was not JSON (content-type=text/html)` | Reached a login page or proxy error page | You're hitting a proxy or the wrong vhost. |
@@ -216,6 +216,38 @@ httpx from inside the pod so you exercise the real network path:
 kubectl exec -n ssf-bridge deploy/ssf-apm-bridge -- \
   python -c "import httpx; r=httpx.get('<url>', timeout=10, follow_redirects=True); print(r.status_code, r.text[:300])"
 ```
+
+### Self-signed transmitters: `verify_tls`
+
+Both `POST /admin/transmitters` and `POST /admin/transmitters/discover`
+accept an optional `verify_tls` boolean. Setting it to `false` skips
+certificate **and hostname** verification for *every* outbound call to that
+transmitter — discovery, stream management, JWKS, and polling:
+
+```jsonc
+{
+  "issuer_or_config_url": "https://keycloak.f5demos.com:30182/realms/geointdemo",
+  "access_token": "...",
+  "events_requested": [
+    "https://schemas.openid.net/secevent/caep/event-type/session-revoked"
+  ],
+  "verify_tls": false
+}
+```
+
+The flag is **persisted on the registered transmitter**, which matters
+because the JWKS fetch happens later during SET verification, not during the
+discovery call — without persistence, discovery would succeed and then every
+SET from that transmitter would fail to verify. Omit the field to inherit the
+`SSF_VERIFY_TLS` setting (default `true`). Each use logs a
+`tls_verification_disabled` warning.
+
+> **Security:** turning verification off means anyone able to intercept the
+> connection can impersonate the transmitter and inject
+> `session-revoked` events, i.e. deny service to arbitrary users. It also
+> will *not* fix a `RemoteProtocolError` — that failure happens before TLS.
+> Prefer `CA_BUNDLE_PATH` with your internal CA; treat `verify_tls: false`
+> as a lab-only shortcut.
 
 > **Note:** `tools/mock_transmitter.py` does **not** serve
 > `/.well-known/ssf-configuration` (only `jwks.json`, bound to `127.0.0.1`),

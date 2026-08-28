@@ -218,3 +218,87 @@ async def test_caller_supplied_client_is_not_closed():
     async with httpx.AsyncClient() as shared:
         assert await fetch_ssf_configuration("https://idp.test", client=shared) == METADATA
         assert not shared.is_closed
+
+
+# --- verify_tls opt-out -----------------------------------------------
+
+
+def _verify_arg(monkeypatch) -> list:
+    """Capture what gets passed as httpx.AsyncClient(verify=...).
+
+    respx intercepts at the transport layer, below TLS, so it cannot observe
+    verification behaviour -- the constructor argument is the observable.
+    """
+    captured = []
+    real_init = httpx.AsyncClient.__init__
+
+    def spy(self, *args, verify=True, **kwargs):
+        captured.append(verify)
+        return real_init(self, *args, verify=verify, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", spy)
+    return captured
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_verify_tls_false_disables_certificate_verification(monkeypatch):
+    captured = _verify_arg(monkeypatch)
+    respx.get(f"https://idp.test{SSF_CONFIGURATION_SEGMENT}").mock(
+        return_value=httpx.Response(200, json=METADATA)
+    )
+
+    await fetch_ssf_configuration("https://idp.test", verify_tls=False)
+
+    assert captured == [False]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_verify_tls_defaults_to_the_setting(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ssf_verify_tls", True)
+    monkeypatch.setattr(settings, "ca_bundle_path", "")
+    captured = _verify_arg(monkeypatch)
+    respx.get(f"https://idp.test{SSF_CONFIGURATION_SEGMENT}").mock(
+        return_value=httpx.Response(200, json=METADATA)
+    )
+
+    await fetch_ssf_configuration("https://idp.test")
+
+    assert captured == [True]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_setting_can_disable_verification_globally(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ssf_verify_tls", False)
+    captured = _verify_arg(monkeypatch)
+    respx.get(f"https://idp.test{SSF_CONFIGURATION_SEGMENT}").mock(
+        return_value=httpx.Response(200, json=METADATA)
+    )
+
+    await fetch_ssf_configuration("https://idp.test")
+
+    assert captured == [False]
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_explicit_verify_tls_true_overrides_a_disabled_setting(monkeypatch):
+    """An explicit True in the request body must not be silently weakened."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "ssf_verify_tls", False)
+    monkeypatch.setattr(settings, "ca_bundle_path", "")
+    captured = _verify_arg(monkeypatch)
+    respx.get(f"https://idp.test{SSF_CONFIGURATION_SEGMENT}").mock(
+        return_value=httpx.Response(200, json=METADATA)
+    )
+
+    await fetch_ssf_configuration("https://idp.test", verify_tls=True)
+
+    assert captured == [True]

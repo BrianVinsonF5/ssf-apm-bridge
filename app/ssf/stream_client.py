@@ -33,7 +33,13 @@ class StreamManagementClient:
     def __init__(self, config: TransmitterConfig, access_token: str, *, http_client: httpx.AsyncClient | None = None):
         self._config = config
         self._token = access_token
-        self._client = http_client or httpx.AsyncClient(timeout=10.0, verify=settings.get_httpx_verify())
+        # TLS policy comes from the transmitter's own config so a lab
+        # transmitter with a self-signed cert stays reachable across restarts
+        # without loosening verification globally.
+        self._client = http_client or httpx.AsyncClient(
+            timeout=10.0,
+            verify=settings.get_httpx_verify(config.verify_tls),
+        )
         self._owns_client = http_client is None
 
     async def aclose(self) -> None:
@@ -95,7 +101,16 @@ class StreamManagementClient:
         await self._post(self._config.verification_endpoint, body)
 
 
-async def discover_transmitter(issuer_or_config_url: str, *, access_token: str | None = None) -> dict[str, Any]:
+async def discover_transmitter(
+    issuer_or_config_url: str,
+    *,
+    access_token: str | None = None,
+    verify_tls: bool | None = None,
+) -> dict[str, Any]:
     """Thin re-export so callers only need to import from this module when
     wiring up a new transmitter."""
-    return await fetch_ssf_configuration(issuer_or_config_url, access_token=access_token)
+    return await fetch_ssf_configuration(
+        issuer_or_config_url,
+        access_token=access_token,
+        verify_tls=verify_tls,
+    )

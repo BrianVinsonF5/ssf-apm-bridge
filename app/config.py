@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     # --- Custom CA Trust ---
     ca_bundle_path: str = ""
 
+    # Default TLS-verification policy for outbound calls to SSF transmitters
+    # (discovery, stream management, JWKS, polling). Per-transmitter requests
+    # may override this with a `verify_tls` field in the admin API body.
+    # Prefer populating CA_BUNDLE_PATH over turning this off.
+    ssf_verify_tls: bool = True
+
     # --- BIG-IP APM ---
     bigip_host: str = ""
     bigip_port: int = 443

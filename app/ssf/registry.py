@@ -21,6 +21,10 @@ class TransmitterConfig(BaseModel):
     # What we expect in the SET's `aud` claim from this transmitter --
     # normally the stream_id the transmitter assigned us at registration.
     expected_audience: str
+    # Set False to skip TLS certificate verification for every outbound call
+    # to this transmitter (discovery, stream management, JWKS, polling).
+    # Lab/self-signed use only -- see the warning in app/admin.py.
+    verify_tls: bool = True
 
 
 class UnknownIssuer(Exception):

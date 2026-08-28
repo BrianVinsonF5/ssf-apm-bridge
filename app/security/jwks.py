@@ -41,9 +41,14 @@ class JWKSManager:
         self._jwks_uri_by_issuer: dict[str, str] = {}
         self._clients: dict[str, PyJWKClient] = {}
         self._client_created_at: dict[str, float] = {}
+        # issuer -> whether to verify TLS when fetching that issuer's JWKS.
+        # Remembered at registration time because the fetch happens later,
+        # during SET verification, long after the admin request is gone.
+        self._verify_tls_by_issuer: dict[str, bool] = {}
 
-    def register_issuer(self, issuer: str, jwks_uri: str) -> None:
+    def register_issuer(self, issuer: str, jwks_uri: str, *, verify_tls: bool = True) -> None:
         self._jwks_uri_by_issuer[issuer] = jwks_uri
+        self._verify_tls_by_issuer[issuer] = verify_tls
         self._clients.pop(issuer, None)
 
     def _client_for(self, issuer: str) -> PyJWKClient:
@@ -56,11 +61,12 @@ class JWKSManager:
 
         stale = time.time() - self._client_created_at.get(issuer, 0) > JWKS_TTL_SECONDS
         if issuer not in self._clients or stale:
+            verify_tls = self._verify_tls_by_issuer.get(issuer, settings.ssf_verify_tls)
             self._clients[issuer] = PyJWKClient(
                 jwks_uri,
                 cache_keys=True,
                 lifespan=JWKS_TTL_SECONDS,
-                ssl_context=settings.get_ssl_context(),
+                ssl_context=settings.get_ssl_context(verify_tls),
             )
             self._client_created_at[issuer] = time.time()
         return self._clients[issuer]
@@ -114,6 +120,7 @@ async def fetch_ssf_configuration(
     *,
     client: httpx.AsyncClient | None = None,
     access_token: str | None = None,
+    verify_tls: bool | None = None,
 ) -> dict:
     """Fetch a transmitter's /.well-known/ssf-configuration document.
 
@@ -124,10 +131,17 @@ async def fetch_ssf_configuration(
     /realms/x/ would otherwise return a 302 that raise_for_status() ignores,
     and we'd fail later in .json() with an opaque decode error.
 
+    `verify_tls=False` disables certificate verification for this fetch
+    (self-signed lab transmitters). Defaults to the SSF_VERIFY_TLS setting.
+    Ignored when the caller supplies its own `client`, which carries its own
+    TLS configuration.
+
     Raises SsfDiscoveryError, whose message names every URL attempted and the
     underlying failure for each.
     """
     candidates = ssf_configuration_urls(issuer_or_config_url)
+    if verify_tls is None:
+        verify_tls = settings.ssf_verify_tls
 
     headers = {"Accept": "application/json"}
     if access_token:
@@ -138,7 +152,7 @@ async def fetch_ssf_configuration(
     owns_client = client is None
     client = client or httpx.AsyncClient(
         timeout=10.0,
-        verify=settings.get_httpx_verify(),
+        verify=settings.get_httpx_verify(verify_tls),
         follow_redirects=True,
     )
     failures: list[str] = []

@@ -31,4 +31,10 @@ data:
   # so leaving 08-internal-ca-configmap.yaml unpopulated is safe.
   CA_BUNDLE_PATH: "/etc/ssl/certs/ca-bundle.crt"
   SSL_CERT_FILE: "/etc/ssl/certs/ca-bundle.crt"
+  # Default TLS-verification policy for outbound calls to SSF transmitters
+  # (discovery, stream management, JWKS, polling). Leave "true": a single
+  # self-signed transmitter should be handled per-request with
+  # "verify_tls": false in the /admin/transmitters/discover body rather than
+  # by disabling verification for every transmitter here.
+  SSF_VERIFY_TLS: "true"
 
