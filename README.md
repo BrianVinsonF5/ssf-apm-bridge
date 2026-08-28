@@ -179,6 +179,54 @@ kubectl port-forward -n ssf-bridge svc/ssf-apm-bridge-service 8080:80
    need to support pushing to (or being polled from) the bridge's
    `/events` endpoint as an SSF transmitter.
 
+### Troubleshooting discovery (`POST /admin/transmitters/discover`)
+
+A failure here returns `502` with `{"detail": "discovery failed: ..."}`.
+The detail names **every URL attempted** and the underlying error for each,
+and the same information is logged at `WARNING` with a full traceback:
+
+```
+kubectl logs -n ssf-bridge deploy/ssf-apm-bridge | Select-String discovery_failed
+```
+
+`issuer_or_config_url` accepts either a bare issuer or a full metadata URL.
+For a bare issuer *with a path* (e.g. Keycloak's
+`https://kc.example.com/realms/corp`) two candidates are tried in order:
+the RFC 8414 form `https://kc.example.com/.well-known/ssf-configuration/realms/corp`,
+then the appended form `https://kc.example.com/realms/corp/.well-known/ssf-configuration`.
+Redirects are followed, and `access_token` is sent as a bearer token on the
+metadata request as well as on stream creation.
+
+Reading the error:
+
+| Error in the detail | Means | Usual fix |
+|---|---|---|
+| `RemoteProtocolError: Server disconnected without sending a response.` | TCP connected, peer closed before sending any HTTP bytes | Almost always a scheme/port mismatch — `http://` against a TLS port, or `https://` against a plaintext one. Also seen when the endpoint requires mTLS, or a firewall/mesh sidecar RSTs the connection. |
+| `ConnectError` / `All connection attempts failed` | Nothing listening, or egress blocked | Check the host/port and any egress NetworkPolicy or security group. |
+| `ConnectTimeout` | Packets silently dropped | Firewall dropping rather than rejecting; check routing from the node's subnet. |
+| `SSLCertVerificationError` | Internal CA not trusted | Populate [`k8s/08-internal-ca-configmap.yaml`](k8s/08-internal-ca-configmap.yaml) and restart the pods. |
+| `HTTP 401` / `403` | Metadata endpoint is protected | Supply a valid `access_token`. |
+| `HTTP 404` on both candidates | Neither well-known convention matches | Pass the exact metadata URL as `issuer_or_config_url`. |
+| `body was not JSON (content-type=text/html)` | Reached a login page or proxy error page | You're hitting a proxy or the wrong vhost. |
+
+There is no `curl` in the `python:3.12-slim` image; probe with the bundled
+httpx from inside the pod so you exercise the real network path:
+
+```
+kubectl exec -n ssf-bridge deploy/ssf-apm-bridge -- \
+  python -c "import httpx; r=httpx.get('<url>', timeout=10, follow_redirects=True); print(r.status_code, r.text[:300])"
+```
+
+> **Note:** `tools/mock_transmitter.py` does **not** serve
+> `/.well-known/ssf-configuration` (only `jwks.json`, bound to `127.0.0.1`),
+> so `/discover` cannot work against it. Use `POST /admin/transmitters`.
+
+> **Note:** the transmitter registry is in-process
+> (`app/ssf/registry.py`), so with `replicas: 2` only the pod that served
+> the `/discover` call knows the transmitter, and SETs arriving at the other
+> pod fail with `UnknownIssuer`. Scale to one replica for lab testing until
+> the registry is backed by Redis.
+
 ## Event-to-enforcement mapping
 
 | Event | Profile | Path | APM action |

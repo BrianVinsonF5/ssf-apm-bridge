@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.security.auth import require_api_key
-from app.security.jwks import fetch_ssf_configuration, jwks_manager
+from app.security.jwks import fetch_ssf_configuration, jwks_manager, ssf_configuration_urls
 from app.ssf.registry import TransmitterConfig, transmitter_registry
 from app.ssf.stream_client import StreamManagementClient, StreamManagementError
 
@@ -41,8 +41,22 @@ async def register_transmitter_via_discovery(body: DiscoverTransmitterBody) -> d
     """Fetch the transmitter's SSF metadata, register it, and create a
     push-delivery stream pointed at this bridge's /events endpoint."""
     try:
-        metadata = await fetch_ssf_configuration(body.issuer_or_config_url)
+        metadata = await fetch_ssf_configuration(
+            body.issuer_or_config_url,
+            access_token=body.access_token,
+        )
     except Exception as exc:  # noqa: BLE001 - surfaced to the caller either way
+        # Log with the traceback: the 502 body is all the caller sees, and
+        # transport errors like "Server disconnected without sending a
+        # response." are undiagnosable without knowing the URL and the
+        # exception class behind them.
+        logger.warning(
+            "discovery_failed: input=%s candidate_urls=%s error=%s",
+            body.issuer_or_config_url,
+            ssf_configuration_urls(body.issuer_or_config_url),
+            exc,
+            exc_info=True,
+        )
         raise HTTPException(status_code=502, detail=f"discovery failed: {exc}") from exc
 
     issuer = metadata.get("issuer")

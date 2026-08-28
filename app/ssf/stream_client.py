@@ -95,7 +95,7 @@ class StreamManagementClient:
         await self._post(self._config.verification_endpoint, body)
 
 
-async def discover_transmitter(issuer_or_config_url: str) -> dict[str, Any]:
+async def discover_transmitter(issuer_or_config_url: str, *, access_token: str | None = None) -> dict[str, Any]:
     """Thin re-export so callers only need to import from this module when
     wiring up a new transmitter."""
-    return await fetch_ssf_configuration(issuer_or_config_url)
+    return await fetch_ssf_configuration(issuer_or_config_url, access_token=access_token)
