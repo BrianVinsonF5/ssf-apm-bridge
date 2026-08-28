@@ -116,6 +116,15 @@ async def register_transmitter_via_discovery(body: DiscoverTransmitterBody) -> d
             events_requested=body.events_requested,
         )
     except StreamManagementError as exc:
+        # Discovery already succeeded by this point, so the transmitter is
+        # reachable and the failure is about the request itself (usually the
+        # access_token). Log it rather than leaving only the 502 body.
+        logger.warning(
+            "stream_creation_failed: issuer=%s configuration_endpoint=%s error=%s",
+            issuer,
+            config.configuration_endpoint,
+            exc,
+        )
         raise HTTPException(status_code=502, detail=f"stream creation failed: {exc}") from exc
     finally:
         await stream_client.aclose()

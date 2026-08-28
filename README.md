@@ -217,6 +217,42 @@ kubectl exec -n ssf-bridge deploy/ssf-apm-bridge -- \
   python -c "import httpx; r=httpx.get('<url>', timeout=10, follow_redirects=True); print(r.status_code, r.text[:300])"
 ```
 
+### `stream creation failed: ... 401`
+
+Discovery succeeded (the transmitter is reachable and its metadata parsed)
+but the `POST` to `configuration_endpoint` was rejected. The error now
+includes the `WWW-Authenticate` challenge, which is where the real reason
+lives when the body is empty:
+
+```
+stream_creation_failed: issuer=... configuration_endpoint=... error=POST ... -> 401 |
+WWW-Authenticate: Bearer error="invalid_token", error_description="Token is not active" | body: <empty>
+```
+
+The `access_token` you pass is **not** the bridge's `ADMIN_API_KEY` — it is a
+token the *transmitter* issued for its own SSF Stream Management API. Common
+causes, in order:
+
+1. **Expired.** These are usually short-lived; a token minted minutes earlier
+   may already be dead. Decode it and check `exp`:
+   `python -c "import jwt,sys; print(jwt.decode(sys.argv[1], options={'verify_signature': False}))" <token>`
+2. **Wrong audience.** The token's `aud` must match what the SSF endpoints
+   expect, not the realm's default client.
+3. **Missing scope.** SSF stream management typically requires a dedicated
+   scope; a plain client-credentials token without it authenticates but is
+   not authorized.
+4. **Opaque vs JWT.** If the transmitter issued a reference token, its SSF
+   endpoint may require introspection to be enabled.
+
+For Keycloak, mint one with client credentials against the same realm:
+
+```
+kubectl exec -n ssf-bridge deploy/ssf-apm-bridge -- python -c "import httpx; \
+r=httpx.post('https://keycloak.f5demos.com:30182/realms/geointdemo/protocol/openid-connect/token', \
+data={'grant_type':'client_credentials','client_id':'<id>','client_secret':'<secret>'}, \
+verify=False, timeout=10); print(r.status_code, r.text[:400])"
+```
+
 ### Self-signed transmitters: `verify_tls`
 
 Both `POST /admin/transmitters` and `POST /admin/transmitters/discover`

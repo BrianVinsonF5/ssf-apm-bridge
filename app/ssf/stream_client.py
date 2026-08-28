@@ -52,8 +52,34 @@ class StreamManagementClient:
     async def _post(self, url: str, body: dict[str, Any]) -> httpx.Response:
         resp = await self._client.post(url, json=body, headers=self._headers())
         if resp.status_code >= 400:
-            raise StreamManagementError(f"POST {url} -> {resp.status_code}: {resp.text}")
+            raise StreamManagementError(self._describe_failure(url, resp))
         return resp
+
+    def _describe_failure(self, url: str, resp: httpx.Response) -> str:
+        """Build an error message that says *why* the call was rejected.
+
+        For 401/403 the response body is often empty, and the actual reason
+        lives in the RFC 6750 `WWW-Authenticate` challenge -- that header is
+        what distinguishes an expired token from a wrong audience from a
+        missing scope, so it must not be dropped.
+        """
+        parts = [f"POST {url} -> {resp.status_code}"]
+
+        challenge = resp.headers.get("www-authenticate")
+        if challenge:
+            parts.append(f"WWW-Authenticate: {challenge}")
+
+        body = resp.text.strip()
+        parts.append(f"body: {body[:400]}" if body else "body: <empty>")
+
+        if resp.status_code in (401, 403):
+            parts.append(
+                "the access_token was rejected by the transmitter's "
+                "stream-management API -- check it is unexpired, was issued by "
+                "this transmitter, and carries the scope/audience its SSF "
+                "endpoints require"
+            )
+        return " | ".join(parts)
 
     async def create_push_stream(self, *, receiver_events_endpoint: str, events_requested: list[str], description: str = "ssf-apm-bridge") -> dict[str, Any]:
         if not self._config.configuration_endpoint:
