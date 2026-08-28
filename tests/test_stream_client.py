@@ -13,7 +13,9 @@ import respx
 
 from app.ssf.registry import TransmitterConfig
 from app.ssf.stream_client import (
+    POLL_DELIVERY_METHOD,
     PUSH_DELIVERY_METHOD,
+    SSF_TOKEN_SCOPES,
     StreamManagementClient,
     StreamManagementError,
 )
@@ -140,6 +142,75 @@ async def test_non_auth_error_keeps_the_body_but_omits_token_guidance(client):
     detail = str(exc.value)
     assert "unsupported_delivery_method" in detail
     assert "access_token was rejected" not in detail
+
+
+def test_delivery_methods_match_the_rfc_urn_forms():
+    """Keycloak accepts four delivery URIs and collapses them into the
+    `push` / `poll` families; the RFC 8935 / 8936 URNs are the modern spelling
+    and are what `delivery_methods_supported` advertises first."""
+    assert PUSH_DELIVERY_METHOD == "urn:ietf:rfc:8935"
+    assert POLL_DELIVERY_METHOD == "urn:ietf:rfc:8936"
+
+
+def test_ssf_token_scopes_match_keycloak():
+    """Keycloak's stream-management API authorizes on these two scopes; a
+    token without them authenticates but is refused, which is the single most
+    common cause of the bare 401 this module reports."""
+    assert SSF_TOKEN_SCOPES == "ssf.read ssf.manage"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_401_names_the_scopes_keycloak_requires(client):
+    """The empty-bodied 401 gives the operator nothing to act on, so the
+    error has to name the scopes and the client attribute itself."""
+    respx.post(CONFIG_ENDPOINT).mock(return_value=httpx.Response(401, text=""))
+
+    with pytest.raises(StreamManagementError) as exc:
+        await client.create_push_stream(
+            receiver_events_endpoint=RECEIVER, events_requested=[SESSION_REVOKED]
+        )
+
+    detail = str(exc.value)
+    assert "ssf.read ssf.manage" in detail
+    assert "ssf.enabled=true" in detail
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_409_explains_keycloaks_one_stream_per_receiver_limit(client):
+    """Keycloak permits exactly one stream per receiver client, so a retry
+    after a partial failure 409s instead of replacing the stream."""
+    respx.post(CONFIG_ENDPOINT).mock(return_value=httpx.Response(409, text=""))
+
+    with pytest.raises(StreamManagementError) as exc:
+        await client.create_push_stream(
+            receiver_events_endpoint=RECEIVER, events_requested=[SESSION_REVOKED]
+        )
+
+    detail = str(exc.value)
+    assert "409" in detail
+    assert "already exists" in detail
+    assert "access_token was rejected" not in detail
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_400_points_at_the_push_url_allow_list(client):
+    """Keycloak's SSRF gate rejects a push URL that isn't in the receiver's
+    ssf.validPushUrls allow-list with a deliberately generic 400."""
+    respx.post(CONFIG_ENDPOINT).mock(
+        return_value=httpx.Response(400, json={"error": "invalid_request"})
+    )
+
+    with pytest.raises(StreamManagementError) as exc:
+        await client.create_push_stream(
+            receiver_events_endpoint=RECEIVER, events_requested=[SESSION_REVOKED]
+        )
+
+    detail = str(exc.value)
+    assert "ssf.validPushUrls" in detail
+    assert "ssf.allowedDeliveryMethods" in detail
 
 
 @pytest.mark.asyncio

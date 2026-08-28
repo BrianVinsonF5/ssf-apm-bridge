@@ -229,13 +229,19 @@ stream_creation_failed: issuer=... configuration_endpoint=... error=POST ... -> 
 WWW-Authenticate: Bearer error="invalid_token", error_description="Token is not active" | body: <empty>
 ```
 
+**Check the token's scopes first.** Keycloak's stream-management API
+authorizes on `ssf.read` / `ssf.manage`; a client-credentials token minted
+without `scope=ssf.read ssf.manage` is the most common cause of a rejection
+here. See [the setup steps below](#where-to-get-the-access_token-from-keycloak).
+
 **If the 401 has _no_ `WWW-Authenticate` header at all** (`body: <empty>` and
-nothing else), that is itself a strong signal. A Keycloak endpoint that
+nothing else), that is a different signal. A Keycloak endpoint that
 authenticated and then rejected a bearer token emits an RFC 6750 challenge;
 a bare 401 usually means the request never reached bearer-token evaluation —
-the path isn't served by the SSF extension, or a proxy answered instead.
-Run the probe, which separates the two causes by testing the *same* token
-against a known-good endpoint first:
+the SSF feature isn't enabled on the server (`--feature-ssf=enabled`), the
+realm's **SSF Transmitter** toggle is off, or a proxy answered instead.
+Run the probe, which separates the causes by decoding the token's scopes and
+testing it against a known-good endpoint first:
 
 ```
 python tools/probe_ssf_endpoint.py \
@@ -253,36 +259,61 @@ The `access_token` you pass is **not** the bridge's `ADMIN_API_KEY` — it is a
 token the *transmitter* issued for its own SSF Stream Management API. Common
 causes, in order:
 
-1. **Expired.** These are usually short-lived; a token minted minutes earlier
+1. **Missing the `ssf.read` / `ssf.manage` scopes.** This is the top cause
+   against Keycloak. Its stream-management API authorizes on those two
+   scopes, so a plain client-credentials token authenticates but is refused.
+   They are normally assigned as *Optional* client scopes, which means they
+   are only granted if the token request explicitly asks for them.
+2. **Expired.** These are usually short-lived; a token minted minutes earlier
    may already be dead. Decode it and check `exp`:
    `python -c "import jwt,sys; print(jwt.decode(sys.argv[1], options={'verify_signature': False}))" <token>`
-2. **Wrong audience.** The token's `aud` must match what the SSF endpoints
-   expect, not the realm's default client.
-3. **Missing scope.** SSF stream management typically requires a dedicated
-   scope; a plain client-credentials token without it authenticates but is
-   not authorized.
-4. **Opaque vs JWT.** If the transmitter issued a reference token, its SSF
+3. **`ssf.enabled` not set on the client.** Keycloak only treats a client as
+   an SSF Receiver when the `ssf.enabled=true` client attribute is present;
+   a normal OIDC client calling `/streams` is not a receiver at all.
+4. **Wrong audience.** The token's `aud` must match what the SSF endpoints
+   expect, not the realm's default `account` client.
+5. **Opaque vs JWT.** If the transmitter issued a reference token, its SSF
    endpoint may require introspection to be enabled.
 
 #### Where to get the `access_token` from Keycloak
 
-**One-time setup in the Keycloak admin console**, in the *same realm* as the
-transmitter (e.g. `geointdemo`):
+Keycloak's SSF transmitter is **experimental and off by default**. Start the
+server with the feature enabled first, or none of the SSF endpoints exist:
 
-1. **Clients → Create client.** Client ID e.g. `ssf-bridge`, type *OpenID
+```
+kc.sh start-dev --feature-ssf=enabled
+```
+
+Then, in the admin console, in the *same realm* as the transmitter (e.g.
+`geointdemo`):
+
+1. **Realm settings →** turn the **SSF Transmitter** toggle **on**. This sets
+   the `ssf.transmitterEnabled` realm attribute and activates the per-realm
+   SSF endpoints (metadata, stream management, JWKS). Without it, discovery
+   may still 404 or the stream endpoints won't be routed.
+2. **Clients → Create client.** Client ID e.g. `ssf-bridge`, type *OpenID
    Connect*. **Next.**
-2. Turn **Client authentication → On** (this makes it a confidential client;
-   a public client cannot use client credentials).
-3. Under **Authentication flow**, tick **Service accounts roles** and untick
+3. Turn **Client authentication → On** (confidential client; a public client
+   cannot use client credentials).
+4. Under **Authentication flow**, tick **Service accounts roles** and untick
    *Standard flow* / *Direct access grants* — the bridge is a machine client.
    **Save.**
-4. **Credentials tab → copy the Client secret.**
-5. If the SSF endpoint requires a role, grant it under **Service accounts
-   roles → Assign role** (in Keycloak's SSF plugin this is often a realm role
-   such as `manage-ssf-streams`, or a client role on `realm-management`).
+5. On the client's **SSF tab**: enable **SSF**, set **Default Subjects** to
+   `ALL`, set an **Audience**, and tick **Push** as a supported delivery
+   method. This is what writes `ssf.enabled=true`.
+6. Still on the **SSF tab**, add the bridge's `/events` URL to **Valid push
+   URLs** (`ssf.validPushUrls`). Keycloak's SSRF gate **rejects PUSH stream
+   creation with a 400 when this list is empty** — it is not optional. Entries
+   are exact-match or trailing-`*` (e.g. `https://ssf-bridge.example.com/*`),
+   a bare `*` is ignored, and the URL must be `https` with a non-private host
+   unless the operator set `allow-insecure-push-targets`.
+7. **Client scopes → Add client scope →** add **`ssf.read`** and
+   **`ssf.manage`** (Optional is what the Keycloak docs use).
+8. **Credentials tab → copy the Client secret.**
 
-**Then mint the token** with the helper, which also reports the claims that
-cause a 401:
+**Then mint the token** with the helper. It requests
+`scope=ssf.read ssf.manage` by default and warns if Keycloak dropped either
+one:
 
 ```
 python tools/get_keycloak_token.py \
@@ -290,16 +321,19 @@ python tools/get_keycloak_token.py \
   --client-id ssf-bridge --client-secret <secret> --insecure
 ```
 
-It prints the token, flags an expired/opaque/wrong-audience token, and emits a
+It prints the token, flags an expired/opaque/wrong-audience token, warns when
+`ssf.read` or `ssf.manage` is missing from the granted scopes, and emits a
 ready-to-paste `/admin/transmitters/discover` body. Use `--quiet` for just the
-token, and `--scope` to request a scope and be told if Keycloak dropped it.
+token, and `--scope` to override the requested scopes.
 
-Equivalent raw call, from inside the pod:
+Equivalent raw call, from inside the pod (note the `scope` parameter — omitting
+it is the usual reason the resulting token gets a 401 at `/streams`):
 
 ```
 kubectl exec -n ssf-bridge deploy/ssf-apm-bridge -- python -c "import httpx; \
 r=httpx.post('https://keycloak.f5demos.com:30182/realms/geointdemo/protocol/openid-connect/token', \
-data={'grant_type':'client_credentials','client_id':'<id>','client_secret':'<secret>'}, \
+data={'grant_type':'client_credentials','client_id':'<id>','client_secret':'<secret>', \
+'scope':'ssf.read ssf.manage'}, \
 verify=False, timeout=10); print(r.status_code, r.text[:400])"
 ```
 
@@ -308,6 +342,38 @@ verify=False, timeout=10); print(r.status_code, r.text[:400])"
 > the client. The bridge stores this token and reuses it for stream
 > management and polling, so a longer lifespan (or a client whose token you
 > can refresh) is preferable for anything beyond a one-shot demo.
+
+### Keycloak SSF compatibility
+
+Checked against Keycloak's [experimental SSF transmitter](https://www.keycloak.org/2026/07/experimental-ssf-support).
+
+| What the bridge sends | Keycloak expects | Status |
+|---|---|---|
+| `GET /.well-known/ssf-configuration/realms/{realm}`, falling back to `…/realms/{realm}/.well-known/ssf-configuration` | Both shapes are published and return the same document. The host-rooted (RFC 8615) form is only served when `KC_HTTP_RELATIVE_PATH` is empty. | ✅ tries both |
+| `POST` to the advertised `configuration_endpoint` | `POST /realms/{realm}/ssf/transmitter/streams` | ✅ endpoint is taken from metadata, not hardcoded |
+| `delivery.method` = `urn:ietf:rfc:8935` | Accepts `urn:ietf:rfc:8935` and the legacy `https://schemas.openid.net/secevent/risc/delivery-method/push`; both collapse to the `push` family | ✅ |
+| `delivery.endpoint_url`, `events_requested`, `description` | Receiver-writable fields | ✅ |
+| No `stream_id` / `iss` / `aud` / `events_supported` in the request | Those are transmitter-stamped; supplying them is a **400** | ✅ never sent |
+| `Authorization: Bearer <token>` | Token must carry `ssf.read ssf.manage` | ⚠️ the bridge forwards whatever token you pass — mint it with those scopes |
+
+Keycloak-side prerequisites the bridge cannot satisfy for you:
+
+- The server runs with `--feature-ssf=enabled` and the realm's **SSF
+  Transmitter** toggle is on.
+- The receiver client has `ssf.enabled=true` and a **non-empty**
+  `ssf.validPushUrls` covering the bridge's `/events` URL — Keycloak's SSRF
+  gate rejects PUSH with a 400 when that allow-list is empty, and the URL must
+  be `https` with a non-private host.
+- `push` is permitted by `ssf.allowedDeliveryMethods` (absent ⇒ both allowed).
+
+Two behaviours worth knowing about:
+
+- **One stream per receiver client.** A second create returns **409**. If
+  `/discover` half-succeeded, delete the existing stream before retrying —
+  the bridge reports this explicitly rather than as a generic failure.
+- **Keycloak stamps `aud` itself.** `/discover` already prefers the `aud` the
+  transmitter returns in the stream object over its own default guess, so SET
+  audience validation lines up without extra configuration.
 
 ### Self-signed transmitters: `verify_tls`
 
@@ -473,6 +539,10 @@ docs/apm-integration.md   BIG-IP-side iRule / per-request-policy wiring
 - [OpenID Shared Signals Framework Specification 1.0](https://openid.net/specs/openid-sharedsignals-framework-1_0-final.html)
 - [OpenID Continuous Access Evaluation Profile (CAEP) 1.0](https://openid.net/specs/openid-caep-1_0-final.html)
 - [OpenID RISC Event Types 1.0](https://openid.net/specs/openid-risc-event-types-1_0.html)
+- [RFC 8935 — Push-Based SET Delivery](https://www.rfc-editor.org/rfc/rfc8935)
+- [Keycloak: Experimental Shared Signals Framework support](https://www.keycloak.org/2026/07/experimental-ssf-support)
+  — the transmitter this bridge is tested against; see the compatibility
+  notes below.
 - [F5 iRules APM command reference](https://clouddocs.f5.com/api/irules/APM.html)
 - [F5 tmsh `apm session` reference](https://clouddocs.f5.com/cli/tmsh-reference/v16/modules/apm/apm_session.html)
 - [BIG-IP APM OAuth Client and Resource Server](https://techdocs.f5.com/en-us/bigip-17-1-0/big-ip-access-policy-manager-oauth-configuration/apm-oauth-client-and-resource-server.html)

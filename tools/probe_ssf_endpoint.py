@@ -30,8 +30,12 @@ from urllib.parse import urlsplit
 import httpx
 import jwt
 
-PUSH_DELIVERY_METHOD = "https://schemas.openid.net/secevent/risc/delivery-method/push"
+# Must match app/ssf/stream_client.py -- the point of this probe is to replay
+# the bridge's exact request, so a divergent delivery method would test the
+# wrong thing.
+PUSH_DELIVERY_METHOD = "urn:ietf:rfc:8935"
 SESSION_REVOKED = "https://schemas.openid.net/secevent/caep/event-type/session-revoked"
+SSF_SCOPES = ("ssf.read", "ssf.manage")
 
 
 def show(resp: httpx.Response) -> None:
@@ -53,6 +57,15 @@ def step1_token_liveness(client: httpx.Client, issuer: str, token: str, auth: di
             f"  JWT. iss={claims.get('iss')} aud={claims.get('aud')!r} "
             f"scope={claims.get('scope')!r}"
         )
+        granted = set(str(claims.get("scope", "")).split())
+        missing = [s for s in SSF_SCOPES if s not in granted]
+        if missing:
+            print(
+                f"\n  >> LIKELY CAUSE: token is missing {' '.join(missing)}.\n"
+                "     Keycloak's SSF stream-management API authorizes on\n"
+                "     'ssf.read ssf.manage'. Assign them as client scopes and\n"
+                "     request them on the client-credentials call."
+            )
     except Exception:
         print("  opaque (not a JWT) -- the SSF endpoint must use introspection")
 
@@ -104,6 +117,23 @@ def step3_metadata(client: httpx.Client, issuer: str, auth: dict) -> dict:
     meta = resp.json()
     for k, v in meta.items():
         print(f"     {k}: {v if isinstance(v, str) else json.dumps(v)}")
+
+    supported = meta.get("delivery_methods_supported") or []
+    if supported and PUSH_DELIVERY_METHOD not in supported:
+        print(
+            f"\n  !! the bridge sends delivery method {PUSH_DELIVERY_METHOD!r},\n"
+            "     which is NOT in delivery_methods_supported. Keycloak also\n"
+            "     accepts the legacy RISC URI\n"
+            "     'https://schemas.openid.net/secevent/risc/delivery-method/push'."
+        )
+
+    config_endpoint = meta.get("configuration_endpoint", "")
+    if config_endpoint and "/ssf/transmitter/streams" not in config_endpoint:
+        print(
+            "\n  !! configuration_endpoint does not end in /ssf/transmitter/streams,\n"
+            "     which is the path Keycloak's SSF extension serves. A different\n"
+            "     path suggests a non-Keycloak transmitter or a rewriting proxy."
+        )
     return meta
 
 

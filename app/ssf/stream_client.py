@@ -21,6 +21,20 @@ from app.ssf.registry import TransmitterConfig
 PUSH_DELIVERY_METHOD = "urn:ietf:rfc:8935"
 POLL_DELIVERY_METHOD = "urn:ietf:rfc:8936"
 
+# Legacy RISC-profile aliases for the same two families. Keycloak's SSF
+# transmitter accepts all four URIs and collapses them into the `push` /
+# `poll` families, so the `urn:` forms above are the correct modern choice;
+# these are here for transmitters that only advertise the older strings.
+RISC_PUSH_DELIVERY_METHOD = "https://schemas.openid.net/secevent/risc/delivery-method/push"
+RISC_POLL_DELIVERY_METHOD = "https://schemas.openid.net/secevent/risc/delivery-method/poll"
+
+# Scopes Keycloak's SSF stream-management API expects on the bearer token.
+# `ssf.manage` covers create/update/delete, `ssf.read` covers the GETs. They
+# must be assigned to the client (Default or Optional) *and* requested at
+# token time -- Keycloak silently drops scopes a client may not request, so a
+# token without them authenticates but is not authorized.
+SSF_TOKEN_SCOPES = "ssf.read ssf.manage"
+
 
 class StreamManagementError(Exception):
     pass
@@ -77,7 +91,27 @@ class StreamManagementClient:
                 "the access_token was rejected by the transmitter's "
                 "stream-management API -- check it is unexpired, was issued by "
                 "this transmitter, and carries the scope/audience its SSF "
-                "endpoints require"
+                f"endpoints require (Keycloak: scope={SSF_TOKEN_SCOPES!r}, and "
+                "the client needs ssf.enabled=true on its SSF tab)"
+            )
+        elif resp.status_code == 409:
+            # Keycloak allows exactly one stream per receiver client, so a
+            # retry after a partial failure hits this rather than replacing
+            # the existing stream.
+            parts.append(
+                "a stream already exists for this receiver client -- Keycloak "
+                "permits only one, so delete the old stream (DELETE on the "
+                "configuration_endpoint, or the SSF tab in the admin console) "
+                "before creating a new one"
+            )
+        elif resp.status_code == 400:
+            # The two request-shape rejections a receiver actually hits.
+            parts.append(
+                "the transmitter rejected the request body -- for Keycloak "
+                "this is usually the push URL failing the receiver's "
+                "ssf.validPushUrls allow-list (which must be non-empty and "
+                "https), or a delivery method excluded by "
+                "ssf.allowedDeliveryMethods"
             )
         return " | ".join(parts)
 

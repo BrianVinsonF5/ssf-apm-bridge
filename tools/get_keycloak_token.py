@@ -25,6 +25,13 @@ import time
 import httpx
 import jwt
 
+# Keycloak's SSF stream-management API authorizes on these two scopes
+# (`ssf.read` for the GETs, `ssf.manage` for create/update/delete). They are
+# assigned to the receiver client as Default or Optional client scopes; an
+# Optional scope is only granted when explicitly requested here, which is the
+# most common reason a token authenticates yet still gets a 401/403.
+SSF_SCOPES = "ssf.read ssf.manage"
+
 
 def decode_unverified(token: str) -> dict | None:
     """Best-effort claim decode. Returns None for opaque (non-JWT) tokens."""
@@ -71,8 +78,9 @@ def describe(token: str, requested_scope: str | None) -> None:
                     "     Access Token Lifespan in Keycloak."
                 )
 
+    granted = set(scope.split())
+
     if requested_scope:
-        granted = set(scope.split())
         missing = [s for s in requested_scope.split() if s not in granted]
         if missing:
             print(
@@ -81,6 +89,17 @@ def describe(token: str, requested_scope: str | None) -> None:
                 "     request. Add it as an assigned (default/optional) client\n"
                 "     scope in the realm."
             )
+
+    ssf_missing = [s for s in SSF_SCOPES.split() if s not in granted]
+    if ssf_missing:
+        print(
+            f"  !! Missing SSF scope(s): {' '.join(ssf_missing)}\n"
+            "     Keycloak's SSF stream-management API authorizes on\n"
+            f"     '{SSF_SCOPES}'. Without them POST .../ssf/transmitter/streams\n"
+            "     is rejected. Fix: Clients -> <client> -> Client scopes ->\n"
+            "     Add client scope -> ssf.read, ssf.manage (as Optional), then\n"
+            f"     request them: --scope '{SSF_SCOPES}'."
+        )
 
     if aud in ("account", ["account"]):
         print(
@@ -97,7 +116,12 @@ def main() -> None:
     p.add_argument("--issuer", required=True, help="realm URL, e.g. https://kc/realms/demo")
     p.add_argument("--client-id", required=True)
     p.add_argument("--client-secret", required=True)
-    p.add_argument("--scope", default=None, help="space-separated scopes to request")
+    p.add_argument(
+        "--scope",
+        default=SSF_SCOPES,
+        help=f"space-separated scopes to request (default: {SSF_SCOPES!r}, what "
+        "Keycloak's SSF stream-management API requires). Pass '' to send none.",
+    )
     p.add_argument("--insecure", action="store_true", help="skip TLS verification (lab only)")
     p.add_argument("--quiet", action="store_true", help="print only the token")
     args = p.parse_args()
