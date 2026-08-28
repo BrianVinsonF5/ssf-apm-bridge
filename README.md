@@ -244,7 +244,37 @@ causes, in order:
 4. **Opaque vs JWT.** If the transmitter issued a reference token, its SSF
    endpoint may require introspection to be enabled.
 
-For Keycloak, mint one with client credentials against the same realm:
+#### Where to get the `access_token` from Keycloak
+
+**One-time setup in the Keycloak admin console**, in the *same realm* as the
+transmitter (e.g. `geointdemo`):
+
+1. **Clients → Create client.** Client ID e.g. `ssf-bridge`, type *OpenID
+   Connect*. **Next.**
+2. Turn **Client authentication → On** (this makes it a confidential client;
+   a public client cannot use client credentials).
+3. Under **Authentication flow**, tick **Service accounts roles** and untick
+   *Standard flow* / *Direct access grants* — the bridge is a machine client.
+   **Save.**
+4. **Credentials tab → copy the Client secret.**
+5. If the SSF endpoint requires a role, grant it under **Service accounts
+   roles → Assign role** (in Keycloak's SSF plugin this is often a realm role
+   such as `manage-ssf-streams`, or a client role on `realm-management`).
+
+**Then mint the token** with the helper, which also reports the claims that
+cause a 401:
+
+```
+python tools/get_keycloak_token.py \
+  --issuer https://keycloak.f5demos.com:30182/realms/geointdemo \
+  --client-id ssf-bridge --client-secret <secret> --insecure
+```
+
+It prints the token, flags an expired/opaque/wrong-audience token, and emits a
+ready-to-paste `/admin/transmitters/discover` body. Use `--quiet` for just the
+token, and `--scope` to request a scope and be told if Keycloak dropped it.
+
+Equivalent raw call, from inside the pod:
 
 ```
 kubectl exec -n ssf-bridge deploy/ssf-apm-bridge -- python -c "import httpx; \
@@ -252,6 +282,12 @@ r=httpx.post('https://keycloak.f5demos.com:30182/realms/geointdemo/protocol/open
 data={'grant_type':'client_credentials','client_id':'<id>','client_secret':'<secret>'}, \
 verify=False, timeout=10); print(r.status_code, r.text[:400])"
 ```
+
+> The token is short-lived (60–300s by default). Mint it **immediately**
+> before calling `/discover`, or raise *Advanced → Access Token Lifespan* on
+> the client. The bridge stores this token and reuses it for stream
+> management and polling, so a longer lifespan (or a client whose token you
+> can refresh) is preferable for anything beyond a one-shot demo.
 
 ### Self-signed transmitters: `verify_tls`
 
