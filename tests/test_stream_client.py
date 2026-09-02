@@ -254,6 +254,51 @@ async def test_400_points_at_the_push_url_allow_list(client):
     assert "ssf.allowedDeliveryMethods" in detail
 
 
+@respx.mock
+@pytest.mark.asyncio
+async def test_400_names_the_push_url_that_was_actually_sent(client):
+    """The allow-list is exact-match (or trailing-`*`), so an operator who
+    pastes the URL they *assumed* the bridge sends -- rather than the one it
+    really derived from RECEIVER_BASE_URL -- hits the identical 400 again.
+    Keycloak's own message names the attribute but never the URL."""
+    respx.post(CONFIG_ENDPOINT).mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "error": "stream_error",
+                "error_description": "delivery method 'push' requires the "
+                "receiver client to declare ssf.validPushUrls",
+            },
+        )
+    )
+
+    with pytest.raises(StreamManagementError) as exc:
+        await client.create_push_stream(
+            receiver_events_endpoint=RECEIVER, events_requested=[SESSION_REVOKED]
+        )
+
+    detail = str(exc.value)
+    assert RECEIVER in detail
+    assert "RECEIVER_BASE_URL" in detail
+    # Keycloak's own wording must survive too -- it names the attribute.
+    assert "ssf.validPushUrls" in detail
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_401_does_not_drag_in_the_push_url_advice(client):
+    """A rejected token has nothing to do with the allow-list; mixing the two
+    is what makes these messages unactionable."""
+    respx.post(CONFIG_ENDPOINT).mock(return_value=httpx.Response(401, text=""))
+
+    with pytest.raises(StreamManagementError) as exc:
+        await client.create_push_stream(
+            receiver_events_endpoint=RECEIVER, events_requested=[SESSION_REVOKED]
+        )
+
+    assert "the push URL sent was" not in str(exc.value)
+
+
 @pytest.mark.asyncio
 async def test_missing_configuration_endpoint_is_reported_clearly(config):
     config.configuration_endpoint = None

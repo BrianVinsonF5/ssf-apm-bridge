@@ -66,13 +66,13 @@ class StreamManagementClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
 
-    async def _post(self, url: str, body: dict[str, Any]) -> httpx.Response:
+    async def _post(self, url: str, body: dict[str, Any], *, push_url: str | None = None) -> httpx.Response:
         resp = await self._client.post(url, json=body, headers=self._headers())
         if resp.status_code >= 400:
-            raise StreamManagementError(self._describe_failure(url, resp))
+            raise StreamManagementError(self._describe_failure(url, resp, push_url=push_url))
         return resp
 
-    def _describe_failure(self, url: str, resp: httpx.Response) -> str:
+    def _describe_failure(self, url: str, resp: httpx.Response, *, push_url: str | None = None) -> str:
         """Build an error message that says *why* the call was rejected.
 
         For 401/403 the response body is often empty, and the actual reason
@@ -130,6 +130,22 @@ class StreamManagementClient:
                 "https), or a delivery method excluded by "
                 "ssf.allowedDeliveryMethods"
             )
+            if push_url:
+                # Naming the URL is the whole fix: the allow-list is
+                # exact-match (or trailing-`*`), and the value comes from
+                # RECEIVER_BASE_URL, so an operator who pastes the URL they
+                # *expected* rather than the one actually sent gets the same
+                # 400 again.
+                parts.append(
+                    f"the push URL sent was {push_url!r} -- add exactly this "
+                    "URL, or a trailing-* prefix of it, to the receiver "
+                    "client's SSF tab -> Valid push URLs (ssf.validPushUrls). "
+                    "It is derived from RECEIVER_BASE_URL, so correct that "
+                    "setting first if it is not the address the transmitter "
+                    "can actually reach; Keycloak also requires https and a "
+                    "non-private host unless the server was started with "
+                    "allow-insecure-push-targets"
+                )
         return " | ".join(parts)
 
     async def create_push_stream(self, *, receiver_events_endpoint: str, events_requested: list[str], description: str = "ssf-apm-bridge") -> dict[str, Any]:
@@ -143,7 +159,9 @@ class StreamManagementClient:
             "events_requested": events_requested,
             "description": description,
         }
-        resp = await self._post(self._config.configuration_endpoint, body)
+        resp = await self._post(
+            self._config.configuration_endpoint, body, push_url=receiver_events_endpoint
+        )
         return resp.json()
 
     async def set_stream_status(self, *, stream_id: str, status: str, reason: str | None = None) -> dict[str, Any]:

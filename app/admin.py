@@ -33,6 +33,33 @@ def _warn_if_tls_verification_disabled(issuer_or_url: str, verify_tls: bool) -> 
         )
 
 
+def _warn_if_push_url_looks_unreachable(push_url: str) -> None:
+    """Flag a push URL the transmitter will refuse before we even send it.
+
+    Keycloak's SSRF gate requires the URL to be `https` (and to match a
+    non-empty `ssf.validPushUrls` entry on the receiver client), and a URL
+    still carrying the shipped `example.com` placeholder cannot be in any
+    real allow-list. Both surface as an opaque 400 from the transmitter, so
+    say it here where the actual value is known.
+    """
+    if not push_url.startswith("https://"):
+        logger.warning(
+            "push_url_not_https: push_url=%s -- Keycloak rejects non-https "
+            "push targets unless the server was started with "
+            "allow-insecure-push-targets. Set RECEIVER_BASE_URL to the "
+            "https address the transmitter can reach.",
+            push_url,
+        )
+    if "example.com" in push_url or "example.internal" in push_url:
+        logger.warning(
+            "push_url_is_placeholder: push_url=%s -- RECEIVER_BASE_URL is "
+            "still a shipped placeholder, so it cannot match the receiver "
+            "client's ssf.validPushUrls allow-list and stream creation will "
+            "fail with a 400.",
+            push_url,
+        )
+
+
 @router.post("/transmitters", status_code=201)
 async def register_transmitter_manual(config: TransmitterConfig) -> dict:
     """Register a transmitter you've already fully configured -- no
@@ -109,20 +136,27 @@ async def register_transmitter_via_discovery(body: DiscoverTransmitterBody) -> d
         verify_tls=verify_tls,
     )
 
+    push_url = f"{settings.receiver_base_url}/events"
+    _warn_if_push_url_looks_unreachable(push_url)
+
     stream_client = StreamManagementClient(config, body.access_token)
     try:
         stream = await stream_client.create_push_stream(
-            receiver_events_endpoint=f"{settings.receiver_base_url}/events",
+            receiver_events_endpoint=push_url,
             events_requested=body.events_requested,
         )
     except StreamManagementError as exc:
         # Discovery already succeeded by this point, so the transmitter is
         # reachable and the failure is about the request itself (usually the
-        # access_token). Log it rather than leaving only the 502 body.
+        # access_token or the push URL). Log it rather than leaving only the
+        # 502 body, and include the push URL: it is the value the operator
+        # has to match in ssf.validPushUrls.
         logger.warning(
-            "stream_creation_failed: issuer=%s configuration_endpoint=%s error=%s",
+            "stream_creation_failed: issuer=%s configuration_endpoint=%s "
+            "push_url=%s error=%s",
             issuer,
             config.configuration_endpoint,
+            push_url,
             exc,
         )
         raise HTTPException(status_code=502, detail=f"stream creation failed: {exc}") from exc

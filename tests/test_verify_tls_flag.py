@@ -231,3 +231,39 @@ def test_no_warning_when_verification_stays_on(caplog):
     with caplog.at_level("WARNING", logger="ssf_bridge.admin"):
         _warn_if_tls_verification_disabled("https://good.test", True)
     assert "tls_verification_disabled" not in caplog.text
+
+
+# --- the push URL the transmitter has to allow-list -------------------
+#
+# Keycloak rejects push stream creation with an opaque 400 when the URL is
+# not https or is absent from the receiver client's ssf.validPushUrls. Both
+# are knowable from RECEIVER_BASE_URL before the request is even sent, so
+# they are called out at that point rather than after a round trip.
+
+
+def test_plaintext_push_url_is_flagged_before_the_transmitter_rejects_it(caplog):
+    from app.admin import _warn_if_push_url_looks_unreachable
+
+    with caplog.at_level("WARNING", logger="ssf_bridge.admin"):
+        _warn_if_push_url_looks_unreachable("http://10.1.1.6:30808/events")
+    assert "push_url_not_https" in caplog.text
+    assert "http://10.1.1.6:30808/events" in caplog.text
+
+
+def test_placeholder_receiver_base_url_is_flagged(caplog):
+    """The shipped ConfigMap value cannot be in anyone's allow-list, so
+    leaving it in place guarantees the 400."""
+    from app.admin import _warn_if_push_url_looks_unreachable
+
+    with caplog.at_level("WARNING", logger="ssf_bridge.admin"):
+        _warn_if_push_url_looks_unreachable("https://ssf-bridge.example.com/events")
+    assert "push_url_is_placeholder" in caplog.text
+
+
+def test_a_real_https_push_url_is_not_flagged(caplog):
+    from app.admin import _warn_if_push_url_looks_unreachable
+
+    with caplog.at_level("WARNING", logger="ssf_bridge.admin"):
+        _warn_if_push_url_looks_unreachable("https://ssf-bridge.f5demos.com/events")
+    assert "push_url_not_https" not in caplog.text
+    assert "push_url_is_placeholder" not in caplog.text

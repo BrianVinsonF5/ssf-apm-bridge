@@ -217,6 +217,58 @@ kubectl exec -n ssf-bridge deploy/ssf-apm-bridge -- \
   python -c "import httpx; r=httpx.get('<url>', timeout=10, follow_redirects=True); print(r.status_code, r.text[:300])"
 ```
 
+### `stream creation failed: ... 400 ... requires the receiver client to declare ssf.validPushUrls`
+
+```
+{"error":"stream_error","error_description":"delivery method 'push' requires
+ the receiver client to declare ssf.validPushUrls"}
+```
+
+This is **not** a bridge bug and not a token problem — discovery and
+authorization both already succeeded. Keycloak's SSRF gate refuses to push to
+any URL the receiver client has not pre-declared, and the receiver client
+here has an **empty** `ssf.validPushUrls`. Keycloak names the attribute but
+never the URL, so the bridge appends the push URL it actually sent:
+
+```
+| the push URL sent was 'https://ssf-bridge.example.com/events' -- add exactly
+this URL, or a trailing-* prefix of it, to the receiver client's SSF tab ->
+Valid push URLs (ssf.validPushUrls)
+```
+
+Fix it in two places, in this order:
+
+1. **Make `RECEIVER_BASE_URL` the address Keycloak can actually reach.** The
+   push URL is `${RECEIVER_BASE_URL}/events`, and
+   [`k8s/01-configmap.yaml`](k8s/01-configmap.yaml) ships the placeholder
+   `https://ssf-bridge.example.com`. Allow-listing a placeholder just moves
+   the failure to delivery time. The bridge logs `push_url_is_placeholder` /
+   `push_url_not_https` at `WARNING` before sending, so check:
+
+   ```
+   kubectl logs -n ssf-bridge deploy/ssf-apm-bridge | Select-String push_url
+   ```
+
+   Keycloak requires **https** with a **non-private, resolvable host** — the
+   NodePort `http://<node-ip>:30808` form will not do, both because it is
+   plaintext and because a private IP is refused unless the server was started
+   with `allow-insecure-push-targets`. Use the Ingress hostname from
+   [`k8s/06-ingress.yaml`](k8s/06-ingress.yaml).
+2. **Add that exact URL** to the receiver client's **SSF tab → Valid push
+   URLs**. Entries are exact-match or trailing-`*`
+   (`https://ssf-bridge.example.com/*`); a bare `*` is ignored. Confirm
+   **Push** is also ticked under supported delivery methods
+   (`ssf.allowedDeliveryMethods`).
+
+**No reachable https URL for the bridge?** Then push delivery is not
+available to you and this 400 cannot be configured away. Keycloak also
+supports poll delivery (RFC 8936), which reverses the direction so the
+transmitter never needs to reach the bridge —
+[`app/ssf/poller.py`](app/ssf/poller.py) implements the client half, but
+`/admin/transmitters/discover` only creates **push** streams today, so a
+poll stream has to be created out-of-band and registered with
+`POST /admin/transmitters`.
+
 ### `stream creation failed: ... 401`
 
 Discovery succeeded (the transmitter is reachable and its metadata parsed)
