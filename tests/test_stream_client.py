@@ -178,6 +178,47 @@ async def test_401_names_the_scopes_keycloak_requires(client):
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_401_covers_every_keycloak_receiver_gate(client):
+    """Keycloak's SsfAuthUtil.checkScopePermission rejects with the same bare
+    401 for five different reasons, and a missing scope is only one of them.
+    The service-account identity check is the one that catches operators who
+    already added `ssf.read ssf.manage`: Keycloak requires the receiver
+    client's *own* service-account token, so another client's
+    client-credentials token is refused with the right scopes. All the gates
+    must be named or the operator fixes the scopes and stalls."""
+    respx.post(CONFIG_ENDPOINT).mock(return_value=httpx.Response(401, text=""))
+
+    with pytest.raises(StreamManagementError) as exc:
+        await client.create_push_stream(
+            receiver_events_endpoint=RECEIVER, events_requested=[SESSION_REVOKED]
+        )
+
+    detail = str(exc.value)
+    assert "ssf.requireServiceAccount" in detail
+    assert "ssf.requiredRole" in detail
+    # The absent challenge is itself misleading here, so say so explicitly.
+    assert "WWW-Authenticate" in detail
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_401_without_a_challenge_does_not_claim_one_is_expected(client):
+    """Keycloak's SSF gate returns `Response.status(UNAUTHORIZED).build()` --
+    no RFC 6750 challenge, ever. So a missing `WWW-Authenticate` must not be
+    read as "the request never reached bearer evaluation"; that inference sent
+    us looking at the feature flag and the proxy instead of the token."""
+    respx.post(CONFIG_ENDPOINT).mock(return_value=httpx.Response(401, text=""))
+
+    with pytest.raises(StreamManagementError) as exc:
+        await client.create_push_stream(
+            receiver_events_endpoint=RECEIVER, events_requested=[SESSION_REVOKED]
+        )
+
+    assert "an absent challenge here says nothing" in str(exc.value)
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_409_explains_keycloaks_one_stream_per_receiver_limit(client):
     """Keycloak permits exactly one stream per receiver client, so a retry
     after a partial failure 409s instead of replacing the stream."""

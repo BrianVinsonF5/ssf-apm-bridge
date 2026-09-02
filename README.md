@@ -229,19 +229,39 @@ stream_creation_failed: issuer=... configuration_endpoint=... error=POST ... -> 
 WWW-Authenticate: Bearer error="invalid_token", error_description="Token is not active" | body: <empty>
 ```
 
-**Check the token's scopes first.** Keycloak's stream-management API
-authorizes on `ssf.read` / `ssf.manage`; a client-credentials token minted
-without `scope=ssf.read ssf.manage` is the most common cause of a rejection
-here. See [the setup steps below](#where-to-get-the-access_token-from-keycloak).
+**A bare 401 with no `WWW-Authenticate` and an empty body is the _normal_
+shape of every SSF authorization failure — it is not a separate signal.**
+Keycloak's receiver gate is a plain boolean check that ends in
+`Response.status(UNAUTHORIZED).build()`
+([`SsfAuthUtil.checkScopePermission`](https://github.com/keycloak/keycloak/blob/main/ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/support/SsfAuthUtil.java)),
+so it never emits an RFC 6750 challenge. Do **not** read the missing header
+as "the request never reached bearer evaluation" — that points you at the
+feature flag and the proxy when the real cause is almost always the token.
 
-**If the 401 has _no_ `WWW-Authenticate` header at all** (`body: <empty>` and
-nothing else), that is a different signal. A Keycloak endpoint that
-authenticated and then rejected a bearer token emits an RFC 6750 challenge;
-a bare 401 usually means the request never reached bearer-token evaluation —
-the SSF feature isn't enabled on the server (`--feature-ssf=enabled`), the
-realm's **SSF Transmitter** toggle is off, or a proxy answered instead.
-Run the probe, which separates the causes by decoding the token's scopes and
-testing it against a known-good endpoint first:
+Five distinct conditions produce that identical 401, and **a missing scope is
+only one of them.** Keycloak checks them in this order:
+
+| # | Gate | What satisfies it |
+|---|---|---|
+| 1 | Token authenticates | Unexpired, a JWT, issued by **this** realm |
+| 2 | `ssf.enabled=true` on the client, and the client is enabled | The SSF tab of the client named in the token's **`azp`** |
+| 3 | Service-account identity — unless `ssf.requireServiceAccount=false` | *Service accounts roles* on, and the token is that client's **own** service-account token |
+| 4 | `ssf.requiredRole` (only if set on the client) | Role present in the token |
+| 5 | Scope claim contains `ssf.manage` (`ssf.read` for the GETs) | `scope=ssf.read ssf.manage` on the token request |
+
+Gate 3 is the trap: it compares the token user's `serviceAccountClientLink`
+against the receiver client's internal id, so a **client-credentials token
+from a _different_ client is refused even with both scopes**, and so is any
+interactive user login. Check the token's `azp` and `preferred_username`
+(expect `service-account-<clientId>`) and confirm `ssf.enabled=true` is set on
+*that* client. See [the setup steps below](#where-to-get-the-access_token-from-keycloak).
+
+**Isolate the failing gate with one extra request.** `GET`ting the same
+`/streams` URL is authorized on `ssf.read` while `POST` needs `ssf.manage`,
+but gates 1–4 are shared. So if `GET` succeeds and `POST` 401s, only
+`ssf.manage` is missing; if both 401, the cause is one of gates 1–4. The probe
+does this comparison for you, and also decodes the token's `azp` /
+`preferred_username`:
 
 ```
 python tools/probe_ssf_endpoint.py \
@@ -249,31 +269,43 @@ python tools/probe_ssf_endpoint.py \
   --access-token "<token>" --client-id ssf-bridge --client-secret <secret> --insecure
 ```
 
-If `userinfo` returns 200 with the same token, the token is fine and the
-problem is authorization or routing at the SSF endpoint — not credentials.
-The probe also repeats the call **without** a token: if that 401 is identical
-to the authenticated one, your `Authorization` header is being ignored or
-stripped in transit.
+If `userinfo` returns 200 with the same token, gate 1 is satisfied — the token
+is live — and the cause is one of gates 2–5, i.e. receiver configuration or
+scopes rather than credentials. The probe also repeats the call **without** a
+token; here that 401 *should* look identical to the authenticated one, because
+Keycloak returns the same bare 401 either way, so treat that as expected
+rather than as evidence of a stripped `Authorization` header.
 
 The `access_token` you pass is **not** the bridge's `ADMIN_API_KEY` — it is a
 token the *transmitter* issued for its own SSF Stream Management API. Common
 causes, in order:
 
-1. **Missing the `ssf.read` / `ssf.manage` scopes.** This is the top cause
-   against Keycloak. Its stream-management API authorizes on those two
-   scopes, so a plain client-credentials token authenticates but is refused.
-   They are normally assigned as *Optional* client scopes, which means they
-   are only granted if the token request explicitly asks for them.
-2. **Expired.** These are usually short-lived; a token minted minutes earlier
-   may already be dead. Decode it and check `exp`:
-   `python -c "import jwt,sys; print(jwt.decode(sys.argv[1], options={'verify_signature': False}))" <token>`
+1. **Missing the `ssf.read` / `ssf.manage` scopes.** Keycloak creates both as
+   **optional** client scopes
+   ([`SsfScopes`](https://github.com/keycloak/keycloak/blob/main/ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/SsfScopes.java)
+   calls `addDefaultClientScope(scope, false)`), so they are only granted when
+   the token request explicitly asks for them — a plain client-credentials
+   token authenticates but is refused.
+2. **Not the receiver client's own service-account token.** Gate 3 above.
+   Requesting the scopes from a *different* client, or using a password /
+   direct-access-grant token, fails identically. Set
+   `ssf.requireServiceAccount=false` on the client only if you deliberately
+   want to relax this.
 3. **`ssf.enabled` not set on the client.** Keycloak only treats a client as
    an SSF Receiver when the `ssf.enabled=true` client attribute is present;
-   a normal OIDC client calling `/streams` is not a receiver at all.
-4. **Wrong audience.** The token's `aud` must match what the SSF endpoints
-   expect, not the realm's default `account` client.
-5. **Opaque vs JWT.** If the transmitter issued a reference token, its SSF
+   a normal OIDC client calling `/streams` is not a receiver at all. It must
+   be set on the client in the token's `azp`.
+4. **Expired.** These are usually short-lived; a token minted minutes earlier
+   may already be dead. Decode it and check `exp`:
+   `python -c "import jwt,sys; print(jwt.decode(sys.argv[1], options={'verify_signature': False}))" <token>`
+5. **`ssf.requiredRole` set but absent from the token.** Only applies when the
+   client carries that attribute; the value is `roleName` for a realm role or
+   `clientId.roleName` for a client role.
+6. **Opaque vs JWT.** If the transmitter issued a reference token, its SSF
    endpoint may require introspection to be enabled.
+
+Note that a **wrong `aud` is _not_ a cause here** — Keycloak's SSF gate never
+inspects the audience. Chasing `aud` on this endpoint is a dead end.
 
 #### Where to get the `access_token` from Keycloak
 
@@ -297,7 +329,10 @@ Then, in the admin console, in the *same realm* as the transmitter (e.g.
    cannot use client credentials).
 4. Under **Authentication flow**, tick **Service accounts roles** and untick
    *Standard flow* / *Direct access grants* — the bridge is a machine client.
-   **Save.**
+   **Save.** This step is **mandatory**, not stylistic: Keycloak's SSF gate
+   requires the token to be this client's own service-account token, so the
+   client-credentials grant must be available on the *same* client you enable
+   SSF on below.
 5. On the client's **SSF tab**: enable **SSF**, set **Default Subjects** to
    `ALL`, set an **Audience**, and tick **Push** as a supported delivery
    method. This is what writes `ssf.enabled=true`.
@@ -354,12 +389,16 @@ Checked against Keycloak's [experimental SSF transmitter](https://www.keycloak.o
 | `delivery.method` = `urn:ietf:rfc:8935` | Accepts `urn:ietf:rfc:8935` and the legacy `https://schemas.openid.net/secevent/risc/delivery-method/push`; both collapse to the `push` family | ✅ |
 | `delivery.endpoint_url`, `events_requested`, `description` | Receiver-writable fields | ✅ |
 | No `stream_id` / `iss` / `aud` / `events_supported` in the request | Those are transmitter-stamped; supplying them is a **400** | ✅ never sent |
-| `Authorization: Bearer <token>` | Token must carry `ssf.read ssf.manage` | ⚠️ the bridge forwards whatever token you pass — mint it with those scopes |
+| `Authorization: Bearer <token>` | Token must carry `ssf.read ssf.manage` **and** be the receiver client's own service-account token | ⚠️ the bridge forwards whatever token you pass — mint it with `client_credentials` on the receiver client itself |
 
 Keycloak-side prerequisites the bridge cannot satisfy for you:
 
 - The server runs with `--feature-ssf=enabled` and the realm's **SSF
-  Transmitter** toggle is on.
+  Transmitter** toggle is on. (If either is off the whole `/ssf/transmitter`
+  subtree is absent, which surfaces as a **404**, not a 401 — the resource
+  locator returns `null` before any token is examined.)
+- The token is the receiver client's **own service-account** token, unless
+  `ssf.requireServiceAccount=false` is set on that client.
 - The receiver client has `ssf.enabled=true` and a **non-empty**
   `ssf.validPushUrls` covering the bridge's `/events` URL — Keycloak's SSRF
   gate rejects PUSH with a 400 when that allow-list is empty, and the URL must

@@ -29,11 +29,14 @@ RISC_PUSH_DELIVERY_METHOD = "https://schemas.openid.net/secevent/risc/delivery-m
 RISC_POLL_DELIVERY_METHOD = "https://schemas.openid.net/secevent/risc/delivery-method/poll"
 
 # Scopes Keycloak's SSF stream-management API expects on the bearer token.
-# `ssf.manage` covers create/update/delete, `ssf.read` covers the GETs. They
-# must be assigned to the client (Default or Optional) *and* requested at
-# token time -- Keycloak silently drops scopes a client may not request, so a
-# token without them authenticates but is not authorized.
-SSF_TOKEN_SCOPES = "ssf.read ssf.manage"
+# `ssf.manage` covers create/update/delete, `ssf.read` covers the GETs
+# (SsfAuthUtil.canManage/canRead -> checkScopePermission). Keycloak creates
+# both as *optional* client scopes, so they are only granted when the token
+# request explicitly asks for them -- a plain client-credentials token
+# authenticates but is not authorized.
+SSF_READ_SCOPE = "ssf.read"
+SSF_MANAGE_SCOPE = "ssf.manage"
+SSF_TOKEN_SCOPES = f"{SSF_READ_SCOPE} {SSF_MANAGE_SCOPE}"
 
 
 class StreamManagementError(Exception):
@@ -89,10 +92,24 @@ class StreamManagementClient:
         if resp.status_code in (401, 403):
             parts.append(
                 "the access_token was rejected by the transmitter's "
-                "stream-management API -- check it is unexpired, was issued by "
-                "this transmitter, and carries the scope/audience its SSF "
-                f"endpoints require (Keycloak: scope={SSF_TOKEN_SCOPES!r}, and "
-                "the client needs ssf.enabled=true on its SSF tab)"
+                "stream-management API. Keycloak collapses every distinct "
+                "cause into the same bare 401 (empty body, no "
+                "WWW-Authenticate), so an absent challenge here says nothing "
+                "-- work through its gates in order: "
+                "(1) the token authenticates at all -- unexpired, a JWT, and "
+                "issued by THIS realm; "
+                "(2) the client the token was issued to (its azp) has "
+                "ssf.enabled=true on its SSF tab and the client itself is "
+                "enabled; "
+                "(3) unless ssf.requireServiceAccount=false, that client has "
+                "service accounts turned on and the token is its OWN "
+                "service-account token -- a client-credentials token from a "
+                "different client, or any interactive user login, is refused "
+                "even with the right scopes; "
+                "(4) ssf.requiredRole, if set on the client, is present in "
+                "the token; "
+                f"(5) the token's scope claim contains {SSF_MANAGE_SCOPE!r} "
+                f"(mint it with scope={SSF_TOKEN_SCOPES!r})"
             )
         elif resp.status_code == 409:
             # Keycloak allows exactly one stream per receiver client, so a

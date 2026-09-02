@@ -101,11 +101,38 @@ def describe(token: str, requested_scope: str | None) -> None:
             f"     request them: --scope '{SSF_SCOPES}'."
         )
 
-    if aud in ("account", ["account"]):
+    # Keycloak's SSF receiver gate (SsfAuthUtil.checkScopePermission) requires
+    # by default that the caller be the receiver client's *own* service
+    # account: it compares the token user's serviceAccountClientLink against
+    # the client's internal id. A client-credentials token minted from a
+    # different client, or any interactive user login, carries the right
+    # scopes and is still rejected with the same bare 401 -- so flag the
+    # identity, not just the scopes.
+    azp = claims.get("azp")
+    username = claims.get("preferred_username")
+    if username and not username.startswith("service-account-"):
         print(
-            "  !! aud is only 'account' -- the realm's default. The SSF endpoint\n"
-            "     probably expects its own audience; add an Audience mapper to a\n"
-            "     client scope assigned to this client."
+            f"  !! Not a service-account token (preferred_username={username!r}).\n"
+            "     Keycloak's SSF endpoints require the receiver client's own\n"
+            "     service-account token unless ssf.requireServiceAccount=false;\n"
+            "     use grant_type=client_credentials, not a user login."
+        )
+    elif username and azp and username != f"service-account-{azp}":
+        print(
+            f"  !! Service-account/client mismatch: username={username!r} but\n"
+            f"     azp={azp!r}. Keycloak checks the token belongs to the receiver\n"
+            "     client's OWN service account; another client's token is refused."
+        )
+
+    if azp:
+        # Deliberately not warning on a default `aud`: Keycloak's SSF gate
+        # never inspects the audience, so that advice sends operators down a
+        # dead end on this endpoint.
+        print(
+            "\n  NOTE: ssf.enabled=true must be set on the SSF tab of client\n"
+            f"     {azp!r} (the token's azp) -- that is the client Keycloak\n"
+            "     gates on. Keycloak's SSF gate does NOT check 'aud', so a\n"
+            f"     default audience (yours: {aud!r}) is not the problem here."
         )
 
 

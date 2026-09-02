@@ -53,10 +53,13 @@ def step1_token_liveness(client: httpx.Client, issuer: str, token: str, auth: di
     print("=" * 70)
     try:
         claims = jwt.decode(token, options={"verify_signature": False})
+        azp = claims.get("azp")
+        username = claims.get("preferred_username")
         print(
             f"  JWT. iss={claims.get('iss')} aud={claims.get('aud')!r} "
             f"scope={claims.get('scope')!r}"
         )
+        print(f"  azp={azp!r} preferred_username={username!r}")
         granted = set(str(claims.get("scope", "")).split())
         missing = [s for s in SSF_SCOPES if s not in granted]
         if missing:
@@ -65,6 +68,36 @@ def step1_token_liveness(client: httpx.Client, issuer: str, token: str, auth: di
                 "     Keycloak's SSF stream-management API authorizes on\n"
                 "     'ssf.read ssf.manage'. Assign them as client scopes and\n"
                 "     request them on the client-credentials call."
+            )
+
+        # Keycloak's receiver gate (SsfAuthUtil.checkScopePermission step 2)
+        # requires, by default, that the caller be the receiver client's *own*
+        # service account -- it compares the token user's
+        # serviceAccountClientLink against the client's internal id. A
+        # client-credentials token from some *other* client carries the right
+        # scopes and still gets the identical bare 401, so the identity behind
+        # the token matters as much as its scopes.
+        if username and not username.startswith("service-account-"):
+            print(
+                "\n  >> LIKELY CAUSE: this is not a service-account token\n"
+                f"     (preferred_username={username!r}). Unless the receiver\n"
+                "     client sets ssf.requireServiceAccount=false, Keycloak\n"
+                "     requires the client's own service-account token, so a\n"
+                "     user login (password / direct-access grant) is refused\n"
+                "     regardless of scopes. Use client_credentials."
+            )
+        elif username and azp and username != f"service-account-{azp}":
+            print(
+                "\n  >> LIKELY CAUSE: service-account/client mismatch.\n"
+                f"     username={username!r} but azp={azp!r}. Keycloak checks\n"
+                "     the token belongs to the receiver client's OWN service\n"
+                "     account; another client's token is refused."
+            )
+        elif azp:
+            print(
+                f"\n  NOTE: ssf.enabled=true must be set on client {azp!r}\n"
+                "     (the azp above) -- that is the client Keycloak gates on,\n"
+                "     not whichever client you configured in the admin UI."
             )
     except Exception:
         print("  opaque (not a JWT) -- the SSF endpoint must use introspection")
@@ -149,7 +182,8 @@ def step4_replay(client: httpx.Client, config_endpoint: str, receiver: str, auth
     json_auth = {**auth, "Content-Type": "application/json"}
 
     print(f"  POST {config_endpoint}")
-    show(client.post(config_endpoint, json=payload, headers=json_auth))
+    p = client.post(config_endpoint, json=payload, headers=json_auth)
+    show(p)
 
     print("\n  same URL, GET (does it exist at all?)")
     g = client.get(config_endpoint, headers=auth)
@@ -157,11 +191,33 @@ def step4_replay(client: httpx.Client, config_endpoint: str, receiver: str, auth
     if g.status_code == 404:
         print("     >> 404 on GET: the SSF extension may not be serving this path.")
 
+    # GET /streams is gated on ssf.read, POST on ssf.manage, but every other
+    # check (valid token, ssf.enabled, service-account, required role) is
+    # shared. Comparing the two therefore isolates which gate is failing --
+    # something the identical bare 401s cannot do on their own.
+    if g.status_code in (200, 204) and p.status_code == 401:
+        print(
+            "\n     >> VERDICT: GET passed but POST 401'd. Every shared gate\n"
+            "        (token, ssf.enabled, service-account, required role) is\n"
+            "        therefore satisfied and only the 'ssf.manage' scope is\n"
+            "        missing. Re-mint with scope='ssf.read ssf.manage'."
+        )
+    elif g.status_code == 401 and p.status_code == 401:
+        print(
+            "\n     >> VERDICT: GET *and* POST both 401. The failure is in a\n"
+            "        gate shared by both, NOT the ssf.manage scope: the token\n"
+            "        is invalid/expired, or the client behind it lacks\n"
+            "        ssf.enabled=true, or is not its own service account, or\n"
+            "        misses ssf.requiredRole, or has no ssf.read either."
+        )
+
     print("\n  same URL, POST with NO token (compare the challenge)")
     show(client.post(config_endpoint, json=payload,
                      headers={"Content-Type": "application/json"}))
-    print("     If the no-token 401 looks identical to the with-token 401, your")
-    print("     Authorization header is being ignored or stripped in transit.")
+    print("     If the no-token 401 looks identical to the with-token 401, that")
+    print("     is EXPECTED here: Keycloak returns a bare 401 for every SSF")
+    print("     authorization failure. Only conclude the header was stripped if")
+    print("     STEP 1's userinfo call also failed with the same token.")
 
 
 def main() -> None:
