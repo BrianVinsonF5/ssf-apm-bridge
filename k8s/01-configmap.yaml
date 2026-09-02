@@ -27,7 +27,7 @@ data:
   # Ingress), clear BOTH values and set PORT back to 8080.
   TLS_CERT_FILE: "/etc/ssf-bridge/tls/tls.crt"
   TLS_KEY_FILE: "/etc/ssf-bridge/tls/tls.key"
-  RECEIVER_BASE_URL: "https://ssf-bridge.example.com"
+  RECEIVER_BASE_URL: "https://ssf-apm-bridge-service.f5demos.com"
   REPLAY_JTI_TTL_SECONDS: "900"
   DECISION_CACHE_TTL_SECONDS: "300"
   CORRELATION_TTL_SECONDS: "86400"
