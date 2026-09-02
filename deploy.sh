@@ -77,6 +77,21 @@ fi
 echo "==> Applying cert-manager resources..."
 if [ -f k8s/07-cert-manager.yaml ]; then
     kubectl apply -f k8s/07-cert-manager.yaml || echo "Warning: cert-manager CRDs not present, skipping cert-manager Issuer/Certificate."
+
+    # The pod terminates TLS itself and mounts ssf-bridge-tls as a
+    # non-optional volume, so it cannot be scheduled until cert-manager has
+    # issued the Certificate. Wait here to turn an opaque
+    # "secret not found"/ContainerCreating stall into a clear message.
+    echo "==> Waiting for the ssf-bridge-cert Certificate to be issued..."
+    if ! kubectl wait --for=condition=Ready certificate/ssf-bridge-cert \
+        -n "${NAMESPACE}" --timeout=120s 2>/dev/null; then
+        echo "    WARNING: ssf-bridge-cert is not Ready."
+        echo "    The bridge serves https from that secret and will NOT start without it."
+        echo "    Diagnose with:"
+        echo "      kubectl describe certificate ssf-bridge-cert -n ${NAMESPACE}"
+        echo "    Most common cause: the 'internal-ca-issuer' ClusterIssuer has no"
+        echo "    'internal-ca-key-pair' secret, or cert-manager is not installed."
+    fi
 fi
 
 # 8. Apply Redis Caching Backend
@@ -111,7 +126,11 @@ if [ -n "${NODE_PORT}" ]; then
         NODE_IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)"
         [ -n "${NODE_IP}" ] && echo "    Note: no node ExternalIP found; showing InternalIP (may not be reachable from the BIG-IP)."
     fi
-    echo "    NodePort URL: http://${NODE_IP:-<node-ip>}:${NODE_PORT}"
-    echo "    Health check: curl http://${NODE_IP:-<node-ip>}:${NODE_PORT}/health"
+    echo "    NodePort URL: https://${NODE_IP:-<node-ip>}:${NODE_PORT}"
+    echo "    Health check: curl --cacert internal-ca.crt https://${NODE_IP:-<node-ip>}:${NODE_PORT}/health"
     echo "    Ensure the node firewall/security group allows inbound TCP ${NODE_PORT}."
+    echo "    TLS is terminated by the pod (a NodePort cannot do it), so callers must"
+    echo "    trust the internal CA. The cert is only valid for the SANs listed in"
+    echo "    k8s/07-cert-manager.yaml -- add '${NODE_IP:-<node-ip>}' there if you dial"
+    echo "    it by IP, or hostname verification will fail."
 fi

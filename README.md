@@ -94,7 +94,7 @@ Or manually with `kubectl`:
 kubectl apply -f k8s/
 ```
 
-### External access (NodePort)
+### External access (NodePort, HTTPS)
 
 Until an Ingress controller is in place, [`k8s/05-service.yaml`](k8s/05-service.yaml) is a
 `NodePort` service so that a REST client and the BIG-IP can both reach the bridge from
@@ -103,9 +103,61 @@ outside the cluster:
 | Setting | Value |
 | --- | --- |
 | Service type | `NodePort` |
-| Cluster-internal | `ssf-apm-bridge-service.ssf-bridge.svc.cluster.local:80` |
-| External | `http://<node-ip>:30808` |
-| Container port | `8080` |
+| Cluster-internal | `ssf-apm-bridge-service.ssf-bridge.svc.cluster.local:443` |
+| External | `https://<node-ip>:30808` |
+| Container port | `8443` (TLS) |
+
+**TLS is terminated by the pod, not by the Service.** A NodePort is plain L4
+packet forwarding — there is no proxy in that path that could hold a
+certificate, so a Service cannot add TLS to a plaintext backend. uvicorn is
+therefore handed the cert-manager keypair directly via `TLS_CERT_FILE` /
+`TLS_KEY_FILE` ([`k8s/01-configmap.yaml`](k8s/01-configmap.yaml)), mounted
+read-only from the `ssf-bridge-tls` secret.
+
+Two consequences worth internalising before you call it:
+
+1. **Callers must trust the issuing CA.** Export it once and point your
+   client at it (`--cacert`); the bridge presents the internal-CA-signed leaf,
+   not a public one.
+   ```bash
+   kubectl get secret ssf-bridge-tls -n ssf-bridge \
+     -o jsonpath='{.data.ca\.crt}' | base64 -d > internal-ca.crt
+   curl --cacert internal-ca.crt https://<node-ip>:30808/health
+   ```
+2. **The node address you dial must be a SAN on the certificate.** Hostname
+   verification is done against whatever you dialled, so
+   `https://10.1.1.6:30808` fails unless `10.1.1.6` is in the Certificate's
+   `ipAddresses`. Add your real node names/IPs to
+   [`k8s/07-cert-manager.yaml`](k8s/07-cert-manager.yaml) — the shipped values
+   are placeholders:
+   ```bash
+   kubectl get nodes -o wide   # then add these to dnsNames / ipAddresses
+   ```
+
+Certificate lifecycle: the `Certificate` renews at 75 days of a 90-day
+lifetime, and the kubelet propagates the rewritten secret to the mounted
+volume within about a minute. **uvicorn reads the keypair only at start-up**,
+so restart the pods after a renewal or the listener keeps serving the old
+leaf:
+
+```bash
+kubectl rollout restart deploy/ssf-apm-bridge -n ssf-bridge
+```
+
+If the keypair is missing or empty the container **exits non-zero rather than
+falling back to HTTP** — a silent downgrade would publish `ADMIN_API_KEY` in
+cleartext on the node port. `ContainerCreating` that never resolves means the
+`ssf-bridge-tls` secret does not exist yet:
+
+```bash
+kubectl get certificate -n ssf-bridge
+kubectl describe certificate ssf-bridge-cert -n ssf-bridge
+kubectl logs -n ssf-bridge deploy/ssf-apm-bridge | Select-String inbound_tls
+```
+
+To deliberately run plaintext behind a TLS-terminating Ingress, clear **both**
+`TLS_CERT_FILE` and `TLS_KEY_FILE` and set `PORT` back to `8080` (setting only
+one is refused at start-up).
 
 Find a node IP and confirm the port is allocated:
 
@@ -118,18 +170,22 @@ Then point your REST client at it (all admin/correlation/decision routes require
 `X-API-Key` header; `/health` and `/readyz` do not):
 
 ```bash
-curl http://<node-ip>:30808/health
-curl -H "X-API-Key: $ADMIN_API_KEY" http://<node-ip>:30808/admin/transmitters
+curl --cacert internal-ca.crt https://<node-ip>:30808/health
+curl --cacert internal-ca.crt \
+  -H "X-API-Key: $ADMIN_API_KEY" https://<node-ip>:30808/admin/transmitters
 ```
 
 Configure the BIG-IP per-request policy connector to call
-`http://<node-ip>:30808/internal/decision?subject_key=<key>` (see
-[`docs/apm-integration.md`](docs/apm-integration.md)).
+`https://<node-ip>:30808/internal/decision?subject_key=<key>` (see
+[`docs/apm-integration.md`](docs/apm-integration.md)). The BIG-IP must trust
+the internal CA for that call — import `internal-ca.crt` into a
+`ltm profile server-ssl` / the sideband trust store, or the connector fails
+the handshake.
 
-> **NodePort is plaintext HTTP.** The API key is sent in a header, so restrict
-> access to the node port to the BIG-IP self-IP and your admin workstation, and
-> move to the Ingress + cert-manager TLS path in
-> [`k8s/06-ingress.yaml`](k8s/06-ingress.yaml) before this leaves a lab.
+> **The API key is still only as safe as the network.** TLS now protects it in
+> transit, but restrict access to the node port to the BIG-IP self-IP and your
+> admin workstation anyway. The certificate is signed by an *internal* CA, so
+> clients that skip verification gain nothing from it being HTTPS.
 
 **Cloud clusters (EKS/AKS/GKE):** a NodePort only works if the node's security group
 or firewall permits inbound TCP `30808` from the caller, and if the nodes are reachable
@@ -249,10 +305,12 @@ Fix it in two places, in this order:
    kubectl logs -n ssf-bridge deploy/ssf-apm-bridge | Select-String push_url
    ```
 
-   Keycloak requires **https** with a **non-private, resolvable host** — the
-   NodePort `http://<node-ip>:30808` form will not do, both because it is
-   plaintext and because a private IP is refused unless the server was started
-   with `allow-insecure-push-targets`. Use the Ingress hostname from
+   Keycloak requires **https** with a **non-private, resolvable host**. The
+   NodePort form now satisfies the scheme requirement (the pod terminates TLS),
+   but `https://<node-ip>:30808` still fails on the *host* rule whenever that
+   is a private address — refused unless the server was started with
+   `allow-insecure-push-targets` — and Keycloak must also trust the internal CA
+   that signed the bridge's certificate. Prefer the Ingress hostname from
    [`k8s/06-ingress.yaml`](k8s/06-ingress.yaml).
 2. **Add that exact URL** to the receiver client's **SSF tab → Valid push
    URLs**. Entries are exact-match or trailing-`*`

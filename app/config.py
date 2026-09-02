@@ -9,7 +9,7 @@ import os
 import ssl
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The value shipped in .env.example / k8s/02-secret.yaml. Rejected at
@@ -67,6 +67,42 @@ class Settings(BaseSettings):
             # bytes we can reproduce exactly on both sides.
             raise ValueError("ADMIN_API_KEY must contain only ASCII characters") from exc
         return v
+
+    # --- Inbound TLS (this service's own listener) ---
+    # A NodePort is plain L4 forwarding -- nothing in that path terminates
+    # TLS -- so serving https on the node port means uvicorn holds the
+    # keypair itself. Point these at a cert-manager-issued secret mounted
+    # into the pod (see k8s/04-deployment.yaml). Leave both empty to serve
+    # plaintext http, which is only appropriate behind an Ingress or proxy
+    # that terminates TLS for us.
+    tls_cert_file: str = ""
+    tls_key_file: str = ""
+
+    @model_validator(mode="after")
+    def _tls_needs_both_halves(self) -> Settings:
+        """A cert without its key (or vice versa) cannot serve TLS.
+
+        Caught here rather than at listener start-up because the failure
+        mode otherwise is a process that binds plaintext http on the port
+        the operator believes is https -- silently publishing ADMIN_API_KEY
+        in cleartext.
+        """
+        if bool(self.tls_cert_file) != bool(self.tls_key_file):
+            missing = "TLS_KEY_FILE" if self.tls_cert_file else "TLS_CERT_FILE"
+            raise ValueError(
+                f"inbound TLS is half-configured: {missing} is empty. Set both "
+                "TLS_CERT_FILE and TLS_KEY_FILE to serve https, or neither to "
+                "serve plaintext http behind a TLS-terminating proxy."
+            )
+        return self
+
+    @property
+    def tls_enabled(self) -> bool:
+        return bool(self.tls_cert_file and self.tls_key_file)
+
+    @property
+    def public_scheme(self) -> str:
+        return "https" if self.tls_enabled else "http"
 
     # --- Custom CA Trust ---
     ca_bundle_path: str = ""

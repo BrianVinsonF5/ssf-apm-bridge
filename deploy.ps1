@@ -90,6 +90,22 @@ if (Test-Path "k8s/08-internal-ca-configmap.yaml") {
 if (Test-Path "k8s/07-cert-manager.yaml") {
     Write-Host "==> Applying cert-manager resources..." -ForegroundColor Cyan
     kubectl apply -f k8s/07-cert-manager.yaml -ErrorAction SilentlyContinue
+
+    # The pod terminates TLS itself and mounts ssf-bridge-tls as a
+    # non-optional volume, so it cannot be scheduled until cert-manager has
+    # issued the Certificate. Wait here to turn an opaque
+    # "secret not found"/ContainerCreating stall into a clear message.
+    Write-Host "==> Waiting for the ssf-bridge-cert Certificate to be issued..." -ForegroundColor Cyan
+    kubectl wait --for=condition=Ready certificate/ssf-bridge-cert `
+        -n $Namespace --timeout=120s 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "    WARNING: ssf-bridge-cert is not Ready." -ForegroundColor Red
+        Write-Host "    The bridge serves https from that secret and will NOT start without it." -ForegroundColor Red
+        Write-Host "    Diagnose with:" -ForegroundColor Yellow
+        Write-Host "      kubectl describe certificate ssf-bridge-cert -n $Namespace" -ForegroundColor Yellow
+        Write-Host "    Most common cause: the 'internal-ca-issuer' ClusterIssuer has no" -ForegroundColor Yellow
+        Write-Host "    'internal-ca-key-pair' secret, or cert-manager is not installed." -ForegroundColor Yellow
+    }
 }
 
 # 8. Apply Redis Caching Backend
@@ -127,7 +143,11 @@ if ($nodePort) {
         }
     }
     if (-not $nodeIp) { $nodeIp = "<node-ip>" }
-    Write-Host "    NodePort URL: http://${nodeIp}:${nodePort}" -ForegroundColor Yellow
-    Write-Host "    Health check: curl http://${nodeIp}:${nodePort}/health" -ForegroundColor Yellow
+    Write-Host "    NodePort URL: https://${nodeIp}:${nodePort}" -ForegroundColor Yellow
+    Write-Host "    Health check: curl --cacert internal-ca.crt https://${nodeIp}:${nodePort}/health" -ForegroundColor Yellow
     Write-Host "    Ensure the node firewall/security group allows inbound TCP $nodePort." -ForegroundColor DarkYellow
+    Write-Host "    TLS is terminated by the pod (a NodePort cannot do it), so callers must" -ForegroundColor DarkYellow
+    Write-Host "    trust the internal CA. The cert is only valid for the SANs listed in" -ForegroundColor DarkYellow
+    Write-Host "    k8s/07-cert-manager.yaml -- add '${nodeIp}' there if you dial it by IP," -ForegroundColor DarkYellow
+    Write-Host "    or hostname verification will fail." -ForegroundColor DarkYellow
 }

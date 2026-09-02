@@ -10,6 +10,12 @@ os.environ.setdefault("BIGIP_USERNAME", "svc")
 os.environ.setdefault("BIGIP_PASSWORD", "svc")
 os.environ.setdefault("BIGIP_ENABLE_FAST_PATH", "false")
 os.environ.setdefault("STORE_BACKEND", "memory")
+# Pinned, not setdefault: an operator's real TLS_CERT_FILE/TLS_KEY_FILE
+# leaking in from the shell would flip the default-plaintext assumption and
+# fail the inbound-TLS tests for reasons that have nothing to do with the
+# code. Tests that need TLS on set these explicitly.
+os.environ["TLS_CERT_FILE"] = ""
+os.environ["TLS_KEY_FILE"] = ""
 
 import pytest
 from jwt import PyJWK

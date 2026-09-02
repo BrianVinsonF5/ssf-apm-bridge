@@ -21,17 +21,23 @@ spec:
           image: ghcr.io/brianvinsonf5/ssf-apm-bridge:latest
           imagePullPolicy: Always
           ports:
-            - containerPort: 8080
-              name: http
+            - containerPort: 8443
+              name: https
           envFrom:
             - configMapRef:
                 name: ssf-bridge-config
             - secretRef:
                 name: ssf-bridge-secrets
+          # scheme: HTTPS is mandatory now that uvicorn holds the keypair --
+          # the kubelet would otherwise send a plaintext GET to a TLS
+          # listener, fail every probe, and crash-loop the pod. The kubelet
+          # does not verify the certificate for probes, so the internal CA
+          # does not need to be in its trust store.
           livenessProbe:
             httpGet:
               path: /health
-              port: 8080
+              port: 8443
+              scheme: HTTPS
             initialDelaySeconds: 10
             periodSeconds: 15
             timeoutSeconds: 5
@@ -39,7 +45,8 @@ spec:
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8080
+              port: 8443
+              scheme: HTTPS
             initialDelaySeconds: 5
             periodSeconds: 5
             timeoutSeconds: 3
@@ -56,6 +63,13 @@ spec:
               mountPath: /etc/ssl/certs/ca-bundle.crt
               subPath: ca-bundle.crt
               readOnly: true
+            # The cert-manager-issued server keypair uvicorn terminates TLS
+            # with. Mounted as a directory (not subPath) on purpose: subPath
+            # mounts are NOT refreshed by the kubelet, so a renewed cert
+            # would never reach the container.
+            - name: tls-volume
+              mountPath: /etc/ssf-bridge/tls
+              readOnly: true
       volumes:
         - name: ca-bundle-volume
           configMap:
@@ -64,4 +78,16 @@ spec:
             # haven't applied 08-internal-ca-configmap.yaml; app/config.py
             # ignores a missing/empty/non-PEM bundle rather than failing.
             optional: true
+        - name: tls-volume
+          secret:
+            # Written by the Certificate in 07-cert-manager.yaml. Keys are
+            # tls.crt / tls.key (cert-manager's fixed naming).
+            secretName: ssf-bridge-tls
+            # NOT optional, unlike the CA bundle: the container is
+            # configured to serve https and deliberately refuses to start
+            # without the keypair rather than downgrading to cleartext, so
+            # a missing secret should block scheduling with a clear
+            # "secret not found" event instead of a crash loop.
+            optional: false
+            defaultMode: 0400
 

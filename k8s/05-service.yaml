@@ -12,20 +12,32 @@ spec:
   # the bridge, and the BIG-IP needs to reach /internal/decision from outside
   # the cluster. Switch back to ClusterIP once 06-ingress.yaml is in service.
   #
-  # This exposes the API over plaintext HTTP on every node. The X-API-Key
-  # travels in a header, so restrict inbound access to nodePort 30808 to the
-  # BIG-IP self-IP and admin hosts. On managed clusters (EKS/AKS/GKE) the node
-  # security group must allow TCP 30808, and nodes in private subnets are not
-  # reachable from outside the VPC at all.
+  # TLS is terminated by the POD, not here. A NodePort is plain L4 packet
+  # forwarding -- there is no proxy in the path that could hold a
+  # certificate -- so `targetPort: 8443` reaches a uvicorn that was handed
+  # the cert-manager keypair directly (TLS_CERT_FILE / TLS_KEY_FILE in
+  # 01-configmap.yaml, mounted by 04-deployment.yaml). A Service cannot add
+  # TLS to a plaintext backend.
+  #
+  # Callers must therefore use https://<node>:30808 AND trust the issuing
+  # CA. The cert only carries the SANs listed in 07-cert-manager.yaml, so a
+  # node IP that isn't in that file will fail hostname verification even
+  # though the connection succeeds.
+  #
+  # On managed clusters (EKS/AKS/GKE) the node security group must allow TCP
+  # 30808, and nodes in private subnets are not reachable from outside the
+  # VPC at all.
   type: NodePort
   selector:
     app: ssf-apm-bridge
   ports:
-    - name: http
-      port: 80
-      targetPort: 8080
+    - name: https
+      port: 443
+      targetPort: 8443
       # Must be inside the cluster's service-node-port-range (default
       # 30000-32767); pinned so BIG-IP config doesn't change on redeploy.
+      # Unchanged from the plaintext version deliberately -- only the
+      # scheme moves to https, so existing firewall rules still apply.
       nodePort: 30808
       protocol: TCP
 

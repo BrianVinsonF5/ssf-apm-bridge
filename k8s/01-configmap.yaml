@@ -8,10 +8,25 @@ metadata:
     app.kubernetes.io/component: config
 data:
   HOST: "0.0.0.0"
-  PORT: "8080"
+  PORT: "8443"
   LOG_LEVEL: "INFO"
   STORE_BACKEND: "redis"
   REDIS_URL: "redis://redis-service.ssf-bridge.svc.cluster.local:6379/0"
+  # --- Inbound TLS ---
+  # The pod terminates TLS itself. This is not optional for the NodePort
+  # path: a NodePort is L4 forwarding, so nothing between the caller and
+  # the container can hold a certificate. Paths point at the cert-manager
+  # secret 'ssf-bridge-tls' (07-cert-manager.yaml), mounted read-only by
+  # 04-deployment.yaml. cert-manager's key names are fixed as tls.crt /
+  # tls.key.
+  #
+  # Setting only one of the two is refused at start-up, and a missing or
+  # empty file exits non-zero rather than falling back to plaintext -- a
+  # silent downgrade would publish ADMIN_API_KEY in cleartext on the node
+  # port. To deliberately serve http (only behind a TLS-terminating
+  # Ingress), clear BOTH values and set PORT back to 8080.
+  TLS_CERT_FILE: "/etc/ssf-bridge/tls/tls.crt"
+  TLS_KEY_FILE: "/etc/ssf-bridge/tls/tls.key"
   RECEIVER_BASE_URL: "https://ssf-bridge.example.com"
   REPLAY_JTI_TTL_SECONDS: "900"
   DECISION_CACHE_TTL_SECONDS: "300"

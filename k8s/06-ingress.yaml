@@ -9,6 +9,18 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     cert-manager.io/cluster-issuer: "internal-ca-issuer"
+    # The backend now speaks TLS (the pod terminates it for the NodePort
+    # path), so the controller must connect with https. Without this it
+    # would send cleartext to a TLS listener and return 502 for everything.
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    # The backend cert is issued for the service/node names in
+    # 07-cert-manager.yaml, not for the upstream IP nginx dials, so pin the
+    # name to verify against rather than disabling verification.
+    nginx.ingress.kubernetes.io/proxy-ssl-name: "ssf-apm-bridge-service.ssf-bridge.svc.cluster.local"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
+    # Requires a secret holding the internal CA (ca.crt). cert-manager
+    # places ca.crt in ssf-bridge-tls when the issuer is a CA issuer.
+    nginx.ingress.kubernetes.io/proxy-ssl-secret: "ssf-bridge/ssf-bridge-tls"
 spec:
   ingressClassName: nginx
   tls:
@@ -25,4 +37,6 @@ spec:
               service:
                 name: ssf-apm-bridge-service
                 port:
-                  number: 80
+                  # Matches the renamed https port in 05-service.yaml; the
+                  # old `80` no longer exists on that Service.
+                  number: 443
