@@ -6,6 +6,19 @@ metadata:
   labels:
     app.kubernetes.io/name: ssf-apm-bridge
     app.kubernetes.io/component: bridge
+  annotations:
+    # uvicorn loads the keypair once, at start-up. cert-manager rewrites
+    # ssf-bridge-tls in place on renewal (75 days into a 90-day lifetime)
+    # and the kubelet refreshes the mounted volume, but the running process
+    # keeps serving the OLD leaf until it is restarted -- so the listener
+    # would go on presenting an expired certificate for 15 days.
+    #
+    # These annotations make stakater/Reloader roll the Deployment when the
+    # secret changes. They are inert if Reloader is not installed, in which
+    # case the restart is manual and MUST be scheduled:
+    #   kubectl rollout restart deploy/ssf-apm-bridge -n ssf-bridge
+    reloader.stakater.com/auto: "true"
+    secret.reloader.stakater.com/reload: "ssf-bridge-tls"
 spec:
   replicas: 2
   selector:

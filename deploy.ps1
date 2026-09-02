@@ -89,7 +89,17 @@ if (Test-Path "k8s/08-internal-ca-configmap.yaml") {
 
 if (Test-Path "k8s/07-cert-manager.yaml") {
     Write-Host "==> Applying cert-manager resources..." -ForegroundColor Cyan
-    kubectl apply -f k8s/07-cert-manager.yaml -ErrorAction SilentlyContinue
+    # NOTE: -ErrorAction is a PowerShell *cmdlet* parameter; kubectl is a
+    # native binary and would receive it as "-E", aborting with "unknown
+    # shorthand flag". The Certificate then never gets created and the pod
+    # stalls in ContainerCreating on the missing ssf-bridge-tls secret.
+    # Check $LASTEXITCODE instead to keep the apply non-fatal.
+    kubectl apply -f k8s/07-cert-manager.yaml
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "    WARNING: could not apply k8s/07-cert-manager.yaml." -ForegroundColor Red
+        Write-Host "    Usually means the cert-manager CRDs are not installed:" -ForegroundColor Yellow
+        Write-Host "      kubectl get crd certificates.cert-manager.io" -ForegroundColor Yellow
+    }
 
     # The pod terminates TLS itself and mounts ssf-bridge-tls as a
     # non-optional volume, so it cannot be scheduled until cert-manager has
@@ -120,7 +130,12 @@ kubectl apply -f k8s/05-service.yaml
 # 10. Apply Ingress
 if (Test-Path "k8s/06-ingress.yaml") {
     Write-Host "==> Applying Ingress..." -ForegroundColor Cyan
-    kubectl apply -f k8s/06-ingress.yaml -ErrorAction SilentlyContinue
+    # Same native-command caveat as the cert-manager apply above.
+    kubectl apply -f k8s/06-ingress.yaml
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "    WARNING: Ingress not applied (no ingress-controller / admission webhook rejected it)." -ForegroundColor Yellow
+        Write-Host "    The NodePort path at https://<node-ip>:30808 is unaffected." -ForegroundColor Yellow
+    }
 }
 
 # 10. Wait for Rollout

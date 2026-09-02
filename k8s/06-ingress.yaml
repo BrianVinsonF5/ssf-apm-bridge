@@ -8,7 +8,20 @@ metadata:
     app.kubernetes.io/component: ingress
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: "lab-ca-issuer"
+    # NOTE: deliberately NO cert-manager.io/cluster-issuer annotation here.
+    #
+    # That annotation makes ingress-shim auto-create its own Certificate for
+    # this Ingress's tls.secretName -- and cert-manager requires each Ingress
+    # to own a UNIQUE secret. Since 07-cert-manager.yaml already declares
+    # ssf-bridge-certificate for ssf-bridge-tls (the pod mounts that same
+    # secret to terminate TLS on the NodePort), annotating here produces a
+    # second Certificate managing the same secret. The two controllers then
+    # take turns re-issuing and overwriting each other's leaf, which shows up
+    # as certificates rotating for no reason and pods serving a key that no
+    # longer matches the cert.
+    #
+    # This is cert-manager's documented manual path: create the Certificate
+    # directly and reference the resulting Secret from the Ingress (below).
     # The backend now speaks TLS (the pod terminates it for the NodePort
     # path), so the controller must connect with https. Without this it
     # would send cleartext to a TLS listener and return 502 for everything.

@@ -140,12 +140,24 @@ Two consequences worth internalising before you call it:
 Certificate lifecycle: the `Certificate` renews at 75 days of a 90-day
 lifetime, and the kubelet propagates the rewritten secret to the mounted
 volume within about a minute. **uvicorn reads the keypair only at start-up**,
-so restart the pods after a renewal or the listener keeps serving the old
-leaf:
+so the pods must be restarted after a renewal or the listener keeps serving
+the old leaf for the remaining 15 days.
+
+[`k8s/04-deployment.yaml`](k8s/04-deployment.yaml) carries
+[Reloader](https://github.com/stakater/Reloader) annotations
+(`reloader.stakater.com/auto`, `secret.reloader.stakater.com/reload:
+ssf-bridge-tls`) that roll the Deployment automatically when the secret
+changes. **They are inert if Reloader is not installed in the cluster** —
+check with `kubectl get deploy -n kube-system reloader-reloader` (or wherever
+you installed it). Without it, schedule the restart yourself:
 
 ```bash
 kubectl rollout restart deploy/ssf-apm-bridge -n ssf-bridge
 ```
+
+`privateKey.rotationPolicy: Always` means each renewal also issues a **new
+private key**, rather than re-signing the original one for the life of the
+deployment.
 
 If the keypair is missing or empty the container **exits non-zero rather than
 falling back to HTTP** — a silent downgrade would publish `ADMIN_API_KEY` in
@@ -202,7 +214,16 @@ kubectl port-forward -n ssf-bridge svc/ssf-apm-bridge-service 8080:80
 ### Custom CA Trust & cert-manager
 
 - **Internal CA Trust (BIG-IP APM & Keycloak SSF)**: Paste your enterprise root/intermediate CA certificate PEM into [`k8s/08-internal-ca-configmap.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/08-internal-ca-configmap.yaml). It is mounted at `/etc/ssl/certs/ca-bundle.crt` inside the container with `SSL_CERT_FILE` and `CA_BUNDLE_PATH` set so python's `httpx` and `PyJWKClient` trust internal HTTPS endpoints.
-- **cert-manager TLS Issuance**: [`k8s/07-cert-manager.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/07-cert-manager.yaml) defines a `Certificate` (`ssf-bridge-certificate`) that requests a keypair from the cluster's existing `lab-ca-issuer` `ClusterIssuer` into the `ssf-bridge-tls` secret. That secret serves both the pod's own HTTPS listener and the Ingress.
+- **cert-manager TLS Issuance**: [`k8s/07-cert-manager.yaml`](k8s/07-cert-manager.yaml) defines a `Certificate` (`ssf-bridge-certificate`) that requests a keypair from the cluster's existing `lab-ca-issuer` `ClusterIssuer` into the `ssf-bridge-tls` secret. That secret serves both the pod's own HTTPS listener and the Ingress.
+
+  The `ClusterIssuer` is **not** created by this repo — it is expected to already exist in the cluster. Confirm it before deploying, since the pod cannot start without the secret it produces:
+
+  ```bash
+  kubectl get clusterissuer lab-ca-issuer
+  kubectl get certificate -n ssf-bridge
+  ```
+
+  > **The Ingress deliberately has no `cert-manager.io/cluster-issuer` annotation.** That annotation makes cert-manager's ingress-shim create a *second* `Certificate` for the Ingress's `tls.secretName`, and cert-manager requires each Ingress to own a unique secret. Because `ssf-bridge-tls` is already owned by `ssf-bridge-certificate` (the pod mounts it to terminate TLS on the NodePort), annotating the Ingress would leave two controllers re-issuing over each other. The `Certificate` is therefore declared explicitly and the Ingress just references the resulting secret.
 
 ### GitHub Container Registry (GHCR) & CI/CD
 

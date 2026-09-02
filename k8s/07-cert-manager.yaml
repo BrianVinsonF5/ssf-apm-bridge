@@ -11,8 +11,10 @@ spec:
   # Consumed twice: mounted into the pod so uvicorn can terminate TLS on the
   # NodePort (04-deployment.yaml), and referenced by 06-ingress.yaml.
   #
-  # uvicorn reads the keypair only at start-up, so after a renewal restart
-  # the pods or the listener keeps serving the old leaf:
+  # uvicorn reads the keypair only at start-up, so the pods must be restarted
+  # after a renewal or the listener keeps serving the old leaf. The Reloader
+  # annotations in 04-deployment.yaml do this automatically IF Reloader is
+  # installed; otherwise it is manual:
   #   kubectl rollout restart deploy/ssf-apm-bridge -n ssf-bridge
   secretName: ssf-bridge-tls
   duration: 2160h # 90 days
@@ -20,6 +22,23 @@ spec:
   subject:
     organizations:
       - F5 Demos
+  # A TLS *server* certificate. Spelled out rather than left to the issuer's
+  # defaults because nginx (proxy-ssl-verify: on, see 06-ingress.yaml) and
+  # the BIG-IP both check extended key usage; a cert issued without
+  # serverAuth handshakes locally and then fails only from those callers.
+  isCA: false
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    encoding: PKCS1
+    # Issue a fresh key on every renewal instead of re-signing the existing
+    # one. cert-manager's default ("Never") silently keeps the original key
+    # for the life of the deployment, so a leak is never aged out.
+    rotationPolicy: Always
   commonName: ssf-bridge.f5demos.com
   dnsNames:
     - ssf-bridge.f5demos.com
@@ -30,6 +49,14 @@ spec:
     # dials) or https://<node>:30808 fails hostname verification:
     #   kubectl get nodes -o wide
     - ssf-apm-bridge-service.ssf-bridge.svc.cluster.local
+    # The shorter forms cluster DNS also resolves. nginx is pinned to the
+    # FQDN above (proxy-ssl-name in 06-ingress.yaml), but anything in-cluster
+    # that dials the service by its short name -- kubectl port-forward
+    # targets, other namespaces, ad-hoc curl from a debug pod -- verifies
+    # against the name it typed, not the FQDN, and fails without these.
+    - ssf-apm-bridge-service.ssf-bridge.svc
+    - ssf-apm-bridge-service.ssf-bridge
+    - ssf-apm-bridge-service
   # ipAddresses:
   #   - 10.1.1.6
   issuerRef:

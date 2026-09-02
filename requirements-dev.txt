@@ -3,3 +3,7 @@ pytest==8.3.3
 pytest-asyncio==0.24.0
 respx==0.21.1
 fakeredis==2.24.1
+# tests/test_k8s_tls_manifests.py parses the k8s manifests. Only ever pulled
+# in transitively before (uvicorn[standard] -> pyyaml), which would break the
+# suite the moment that extra changed.
+PyYAML==6.0.2
