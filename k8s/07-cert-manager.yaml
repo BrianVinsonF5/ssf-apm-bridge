@@ -1,64 +1,37 @@
 apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: internal-ca-issuer
-spec:
-  ca:
-    secretName: internal-ca-key-pair
----
-apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: ssf-bridge-cert
+  name: ssf-bridge-certificate
   namespace: ssf-bridge
   labels:
     app.kubernetes.io/name: ssf-apm-bridge
     app.kubernetes.io/component: tls
 spec:
-  # This secret is consumed twice: mounted into the pod so uvicorn can
-  # terminate TLS on the NodePort (k8s/04-deployment.yaml), and referenced
-  # by the Ingress for the hostname-based path (k8s/06-ingress.yaml).
-  # cert-manager writes tls.crt / tls.key / ca.crt into it.
+  # The name of the Secret that cert-manager will populate and renew.
+  # Consumed twice: mounted into the pod so uvicorn can terminate TLS on the
+  # NodePort (04-deployment.yaml), and referenced by 06-ingress.yaml.
+  #
+  # uvicorn reads the keypair only at start-up, so after a renewal restart
+  # the pods or the listener keeps serving the old leaf:
+  #   kubectl rollout restart deploy/ssf-apm-bridge -n ssf-bridge
   secretName: ssf-bridge-tls
-  duration: 2160h # 90d
-  renewBefore: 360h # 15d
-  # cert-manager rewrites the secret in place on renewal, and the kubelet
-  # propagates that to the mounted volume within ~a minute. uvicorn reads
-  # the keypair once at start-up, so restart the pods after a renewal
-  # (`kubectl rollout restart deploy/ssf-apm-bridge -n ssf-bridge`) or the
-  # listener keeps serving the expired leaf.
-  privateKey:
-    algorithm: RSA
-    size: 2048
-    # Rotate the key on renewal rather than reusing it indefinitely.
-    rotationPolicy: Always
-  usages:
-    - server auth
+  duration: 2160h # 90 days
+  renewBefore: 360h # 15 days before expiry
   subject:
     organizations:
-      - Internal Enterprise
-  commonName: ssf-bridge.example.com
+      - F5 Demos
+  commonName: ssf-bridge.f5demos.com
   dnsNames:
-    - ssf-bridge.example.com
-    # In-cluster callers (and anything using the service DNS name).
+    - ssf-bridge.f5demos.com
+    # The NodePort has no proxy in front of it to terminate TLS, so the pod
+    # serves this cert directly and callers validate it against whatever host
+    # they dialled. In-cluster/Ingress callers use the service name; add your
+    # node hostnames (or uncomment ipAddresses with the node IPs the BIG-IP
+    # dials) or https://<node>:30808 fails hostname verification:
+    #   kubectl get nodes -o wide
     - ssf-apm-bridge-service.ssf-bridge.svc.cluster.local
-    - ssf-apm-bridge-service.ssf-bridge.svc
-    - ssf-apm-bridge-service
-  # --- NodePort SANs ---
-  # A client reaching https://<node>:30808 validates the cert against the
-  # host it dialled, so the node's own name/address must be a SAN or every
-  # request fails hostname verification -- which no amount of correct
-  # cert-manager config fixes on its own.
-  #
-  # REPLACE these with your actual node hostnames, and uncomment/replace the
-  # ipAddresses block with the node IPs the BIG-IP and your admin hosts dial.
-  # A cert cannot be issued for an address that isn't listed here.
-  #   kubectl get nodes -o wide
-    - ssf-node-1.example.com
-    - ssf-node-2.example.com
   # ipAddresses:
   #   - 10.1.1.6
-  #   - 192.168.36.65
   issuerRef:
-    name: internal-ca-issuer
+    name: lab-ca-issuer
     kind: ClusterIssuer

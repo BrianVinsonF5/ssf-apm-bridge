@@ -27,7 +27,11 @@ data:
   # Ingress), clear BOTH values and set PORT back to 8080.
   TLS_CERT_FILE: "/etc/ssf-bridge/tls/tls.crt"
   TLS_KEY_FILE: "/etc/ssf-bridge/tls/tls.key"
-  RECEIVER_BASE_URL: "https://ssf-bridge.example.com"
+  # Must match the Certificate's commonName in 07-cert-manager.yaml and the
+  # Ingress host in 06-ingress.yaml -- the push URL Keycloak receives is
+  # "${RECEIVER_BASE_URL}/events", and it must also be in the receiver
+  # client's ssf.validPushUrls allow-list.
+  RECEIVER_BASE_URL: "https://ssf-bridge.f5demos.com"
   REPLAY_JTI_TTL_SECONDS: "900"
   DECISION_CACHE_TTL_SECONDS: "300"
   CORRELATION_TTL_SECONDS: "86400"

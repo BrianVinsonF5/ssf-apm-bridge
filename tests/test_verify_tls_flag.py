@@ -251,8 +251,10 @@ def test_plaintext_push_url_is_flagged_before_the_transmitter_rejects_it(caplog)
 
 
 def test_placeholder_receiver_base_url_is_flagged(caplog):
-    """The shipped ConfigMap value cannot be in anyone's allow-list, so
-    leaving it in place guarantees the 400."""
+    """An example.com/example.internal RECEIVER_BASE_URL cannot be in
+    anyone's allow-list, so leaving one in place guarantees the 400. The
+    k8s ConfigMap now ships a real hostname (asserted below), but .env
+    templates and hand-edited configs still carry these."""
     from app.admin import _warn_if_push_url_looks_unreachable
 
     with caplog.at_level("WARNING", logger="ssf_bridge.admin"):

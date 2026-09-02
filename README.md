@@ -116,23 +116,26 @@ read-only from the `ssf-bridge-tls` secret.
 
 Two consequences worth internalising before you call it:
 
-1. **Callers must trust the issuing CA.** Export it once and point your
-   client at it (`--cacert`); the bridge presents the internal-CA-signed leaf,
-   not a public one.
+1. **Callers must trust the issuing CA.** Export the `lab-ca-issuer` CA once
+   and point your client at it (`--cacert`); the bridge presents a lab-CA-signed
+   leaf, not a publicly-trusted one.
    ```bash
    kubectl get secret ssf-bridge-tls -n ssf-bridge \
-     -o jsonpath='{.data.ca\.crt}' | base64 -d > internal-ca.crt
-   curl --cacert internal-ca.crt https://<node-ip>:30808/health
+     -o jsonpath='{.data.ca\.crt}' | base64 -d > lab-ca.crt
+   curl --cacert lab-ca.crt https://<node-ip>:30808/health
    ```
 2. **The node address you dial must be a SAN on the certificate.** Hostname
    verification is done against whatever you dialled, so
    `https://10.1.1.6:30808` fails unless `10.1.1.6` is in the Certificate's
-   `ipAddresses`. Add your real node names/IPs to
-   [`k8s/07-cert-manager.yaml`](k8s/07-cert-manager.yaml) — the shipped values
-   are placeholders:
+   `ipAddresses`. The shipped `Certificate` covers `ssf-bridge.f5demos.com`
+   and the in-cluster service name; uncomment `ipAddresses` in
+   [`k8s/07-cert-manager.yaml`](k8s/07-cert-manager.yaml) and add the node
+   addresses the BIG-IP actually dials:
    ```bash
    kubectl get nodes -o wide   # then add these to dnsNames / ipAddresses
    ```
+   Prefer pointing a DNS name at the node and using that instead — IP SANs
+   have to be re-issued whenever a node is replaced.
 
 Certificate lifecycle: the `Certificate` renews at 75 days of a 90-day
 lifetime, and the kubelet propagates the rewritten secret to the mounted
@@ -151,7 +154,7 @@ cleartext on the node port. `ContainerCreating` that never resolves means the
 
 ```bash
 kubectl get certificate -n ssf-bridge
-kubectl describe certificate ssf-bridge-cert -n ssf-bridge
+kubectl describe certificate ssf-bridge-certificate -n ssf-bridge
 kubectl logs -n ssf-bridge deploy/ssf-apm-bridge | Select-String inbound_tls
 ```
 
@@ -170,21 +173,20 @@ Then point your REST client at it (all admin/correlation/decision routes require
 `X-API-Key` header; `/health` and `/readyz` do not):
 
 ```bash
-curl --cacert internal-ca.crt https://<node-ip>:30808/health
-curl --cacert internal-ca.crt \
+curl --cacert lab-ca.crt https://<node-ip>:30808/health
+curl --cacert lab-ca.crt \
   -H "X-API-Key: $ADMIN_API_KEY" https://<node-ip>:30808/admin/transmitters
 ```
 
 Configure the BIG-IP per-request policy connector to call
 `https://<node-ip>:30808/internal/decision?subject_key=<key>` (see
 [`docs/apm-integration.md`](docs/apm-integration.md)). The BIG-IP must trust
-the internal CA for that call — import `internal-ca.crt` into a
-`ltm profile server-ssl` / the sideband trust store, or the connector fails
-the handshake.
+the lab CA for that call — import `lab-ca.crt` into a `ltm profile server-ssl`
+/ the sideband trust store, or the connector fails the handshake.
 
 > **The API key is still only as safe as the network.** TLS now protects it in
 > transit, but restrict access to the node port to the BIG-IP self-IP and your
-> admin workstation anyway. The certificate is signed by an *internal* CA, so
+> admin workstation anyway. The certificate is signed by a *lab* CA, so
 > clients that skip verification gain nothing from it being HTTPS.
 
 **Cloud clusters (EKS/AKS/GKE):** a NodePort only works if the node's security group
@@ -200,7 +202,7 @@ kubectl port-forward -n ssf-bridge svc/ssf-apm-bridge-service 8080:80
 ### Custom CA Trust & cert-manager
 
 - **Internal CA Trust (BIG-IP APM & Keycloak SSF)**: Paste your enterprise root/intermediate CA certificate PEM into [`k8s/08-internal-ca-configmap.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/08-internal-ca-configmap.yaml). It is mounted at `/etc/ssl/certs/ca-bundle.crt` inside the container with `SSL_CERT_FILE` and `CA_BUNDLE_PATH` set so python's `httpx` and `PyJWKClient` trust internal HTTPS endpoints.
-- **cert-manager TLS Issuance**: [`k8s/07-cert-manager.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/07-cert-manager.yaml) defines a cert-manager `ClusterIssuer` (`internal-ca-issuer`) and `Certificate` (`ssf-bridge-cert`) resource for automated ingress TLS certificate management.
+- **cert-manager TLS Issuance**: [`k8s/07-cert-manager.yaml`](file:///c:/Users/vinson/OneDrive%20-%20F5,%20Inc/Code/ssf-apm-bridge/k8s/07-cert-manager.yaml) defines a `Certificate` (`ssf-bridge-certificate`) that requests a keypair from the cluster's existing `lab-ca-issuer` `ClusterIssuer` into the `ssf-bridge-tls` secret. That secret serves both the pod's own HTTPS listener and the Ingress.
 
 ### GitHub Container Registry (GHCR) & CI/CD
 
@@ -287,7 +289,7 @@ here has an **empty** `ssf.validPushUrls`. Keycloak names the attribute but
 never the URL, so the bridge appends the push URL it actually sent:
 
 ```
-| the push URL sent was 'https://ssf-bridge.example.com/events' -- add exactly
+| the push URL sent was 'https://ssf-bridge.f5demos.com/events' -- add exactly
 this URL, or a trailing-* prefix of it, to the receiver client's SSF tab ->
 Valid push URLs (ssf.validPushUrls)
 ```
@@ -295,10 +297,12 @@ Valid push URLs (ssf.validPushUrls)
 Fix it in two places, in this order:
 
 1. **Make `RECEIVER_BASE_URL` the address Keycloak can actually reach.** The
-   push URL is `${RECEIVER_BASE_URL}/events`, and
-   [`k8s/01-configmap.yaml`](k8s/01-configmap.yaml) ships the placeholder
-   `https://ssf-bridge.example.com`. Allow-listing a placeholder just moves
-   the failure to delivery time. The bridge logs `push_url_is_placeholder` /
+   push URL is `${RECEIVER_BASE_URL}/events`;
+   [`k8s/01-configmap.yaml`](k8s/01-configmap.yaml) sets
+   `https://ssf-bridge.f5demos.com`, which must match the `Certificate` in
+   [`k8s/07-cert-manager.yaml`](k8s/07-cert-manager.yaml) and resolve from
+   Keycloak. Allow-listing a name Keycloak cannot reach just moves the
+   failure to delivery time. The bridge logs `push_url_is_placeholder` /
    `push_url_not_https` at `WARNING` before sending, so check:
 
    ```
@@ -309,12 +313,12 @@ Fix it in two places, in this order:
    NodePort form now satisfies the scheme requirement (the pod terminates TLS),
    but `https://<node-ip>:30808` still fails on the *host* rule whenever that
    is a private address — refused unless the server was started with
-   `allow-insecure-push-targets` — and Keycloak must also trust the internal CA
+   `allow-insecure-push-targets` — and Keycloak must also trust the lab CA
    that signed the bridge's certificate. Prefer the Ingress hostname from
    [`k8s/06-ingress.yaml`](k8s/06-ingress.yaml).
 2. **Add that exact URL** to the receiver client's **SSF tab → Valid push
    URLs**. Entries are exact-match or trailing-`*`
-   (`https://ssf-bridge.example.com/*`); a bare `*` is ignored. Confirm
+   (`https://ssf-bridge.f5demos.com/*`); a bare `*` is ignored. Confirm
    **Push** is also ticked under supported delivery methods
    (`ssf.allowedDeliveryMethods`).
 
@@ -449,7 +453,7 @@ Then, in the admin console, in the *same realm* as the transmitter (e.g.
 6. Still on the **SSF tab**, add the bridge's `/events` URL to **Valid push
    URLs** (`ssf.validPushUrls`). Keycloak's SSRF gate **rejects PUSH stream
    creation with a 400 when this list is empty** — it is not optional. Entries
-   are exact-match or trailing-`*` (e.g. `https://ssf-bridge.example.com/*`),
+   are exact-match or trailing-`*` (e.g. `https://ssf-bridge.f5demos.com/*`),
    a bare `*` is ignored, and the URL must be `https` with a non-private host
    unless the operator set `allow-insecure-push-targets`.
 7. **Client scopes → Add client scope →** add **`ssf.read`** and

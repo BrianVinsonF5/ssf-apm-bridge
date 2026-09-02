@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: ingress
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: "internal-ca-issuer"
+    cert-manager.io/cluster-issuer: "lab-ca-issuer"
     # The backend now speaks TLS (the pod terminates it for the NodePort
     # path), so the controller must connect with https. Without this it
     # would send cleartext to a TLS listener and return 502 for everything.
@@ -25,10 +25,12 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - ssf-bridge.example.com
+        - ssf-bridge.f5demos.com
+      # Same secret the Certificate in 07-cert-manager.yaml populates, so
+      # the Ingress reuses that leaf instead of requesting a second one.
       secretName: ssf-bridge-tls
   rules:
-    - host: ssf-bridge.example.com
+    - host: ssf-bridge.f5demos.com
       http:
         paths:
           - path: /
